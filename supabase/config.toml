@@ -1,0 +1,4 @@
+project_id = "acervo"
+
+[functions.acervo-images]
+verify_jwt = false
