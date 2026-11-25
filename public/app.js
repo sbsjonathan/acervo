@@ -1,7 +1,9 @@
+import { createCaptionControls, isCustomAuthor } from './captions.js';
+import { createVariations } from './variations.js';
 import { createFlowMotion } from './flow-motion.js';
 import { prepareSlotPhoto } from './slot-photo.js';
 import {
-  AUTHOR_MAX_LENGTH, AUTHOR_OPTIONS, createCatalogConnection, getCatalogConfig, IMAGE_CATEGORIES, SLOT_COUNT,
+  AUTHOR_MAX_LENGTH, createCatalogConnection, getCatalogConfig, IMAGE_CATEGORIES, SLOT_COUNT,
 } from './supabase.js';
 
 const byId = id => document.getElementById(id);
@@ -20,27 +22,20 @@ const viewport = byId('flow-viewport');
 const previousButton = byId('previous-image');
 const nextButton = byId('next-image');
 const favoriteButton = byId('flow-favorite');
-const authorCaption = byId('author-caption');
-const categoryCaption = byId('category-caption');
+const variationsToggle = byId('variations-toggle');
 const authorDialog = byId('author-dialog');
 const authorSelect = byId('author-select');
 const authorCustom = byId('author-custom');
 const categorySelect = byId('category-select');
-const customAuthorOption = element('option');
-customAuthorOption.value = 'custom';
-customAuthorOption.disabled = true;
-customAuthorOption.hidden = true;
-authorSelect.insertBefore(customAuthorOption, authorSelect.lastElementChild);
 const metadataDrafts = new Map();
-let authorDialogSlot = 0;
+const pendingFields = new WeakMap();
 const flowCounter = byId('results');
 const announcement = byId('flow-announcement');
 const favoritesKey = 'acervo-favoritos-v1';
 const state = {
   albums: new Map(),
-  config: null,
+  images: new Map(),
   source: null,
-  favorites: readFavorites(),
   pending: false,
   error: '',
 };
@@ -51,40 +46,65 @@ let radius = 3;
 let pickerSlot = 0;
 authorCustom.maxLength = AUTHOR_MAX_LENGTH;
 const covers = new Map();
+let applyCustomAuthor = null;
+const captions = createCaptionControls({
+  authorSelect, categorySelect, authorCaption: byId('author-caption'), categoryCaption: byId('category-caption'),
+  onChange: (field, value) => changeCaption(activeIndex + 1, field, value),
+  onCustomAuthor: () => {
+    const slot = activeIndex + 1;
+    editCustomAuthor(albumMetadata(slot), name => changeCaption(slot, 'author', name));
+  },
+});
+const variations = createVariations({
+  getImages: imagesForCover,
+  uploadVariation,
+  editImage,
+  isSaving,
+  editCustomAuthor,
+  openPhoto: openDetail,
+  report: reportSlot,
+});
 const motion = createFlowMotion(viewport, {
   getStep: () => state.pending ? 0 : step,
   onPosition: updateFlow,
+  onVerticalSwipe(direction) {
+    if (direction === 'up') openVariations();
+  },
   onSettle: () => {
     announcement.textContent = `Álbum ${activeIndex + 1} de ${SLOT_COUNT}.`;
   },
 });
 let toastTimer;
 
-function readFavorites() {
+function readLegacyFavorites() {
   try {
     const entries = JSON.parse(localStorage.getItem(favoritesKey));
-    return new Set(Array.isArray(entries) ? entries : []);
+    return Array.isArray(entries) ? entries : [];
   } catch {
-    return new Set();
+    return [];
   }
 }
 
-function favoriteId(image) {
-  return `${state.config?.url ?? 'demo'}:${image.id}`;
-}
-
-function isFavorite(image) {
-  return state.favorites.has(favoriteId(image));
-}
-
-function toggleFavorite(image) {
-  const id = favoriteId(image);
-  if (state.favorites.has(id)) state.favorites.delete(id);
-  else state.favorites.add(id);
-  try {
-    localStorage.setItem(favoritesKey, JSON.stringify([...state.favorites]));
-  } catch {}
-  updateFavoriteButton();
+async function importLocalFavorites(source, projectUrl) {
+  const prefix = projectUrl + ':';
+  let retryNeeded = false;
+  for (const entry of readLegacyFavorites()) {
+    if (typeof entry !== 'string' || !entry.startsWith(prefix) || state.source !== source) continue;
+    const image = state.images.get(entry.slice(prefix.length));
+    if (!image || isSaving(image, 'favorite')) continue;
+    try {
+      await persistField(image, 'favorite', () => source.importFavorite(image.id));
+    } catch {
+      retryNeeded = true;
+      continue;
+    }
+    try {
+      // Re-read so another tab's edits are preserved.
+      const remaining = readLegacyFavorites().filter(key => key !== entry);
+      localStorage.setItem(favoritesKey, JSON.stringify(remaining));
+    } catch {}
+  }
+  if (retryNeeded) reportSlot('Alguns corações deste aparelho serão sincronizados quando você reabrir o Acervo.');
 }
 
 function albumNumber(album) {
@@ -93,61 +113,86 @@ function albumNumber(album) {
 
 function updateFavoriteButton() {
   const image = state.albums.get(activeIndex + 1);
-  const favorite = image ? isFavorite(image) : false;
-  favoriteButton.disabled = !image;
+  const favorite = Boolean(image?.favorite);
+  favoriteButton.disabled = !image || isSaving(image, 'favorite');
   favoriteButton.setAttribute('aria-pressed', String(favorite));
   favoriteButton.setAttribute('aria-label', favorite ? 'Remover dos favoritos' : 'Adicionar aos favoritos');
+  variationsToggle.disabled = !image;
+}
+
+function openVariations() {
+  motion.jumpTo(Math.round(motion.getPosition()));
+  const parent = state.albums.get(activeIndex + 1);
+  if (parent) variations.open(parent);
+}
+
+function imagesForCover(parentId) {
+  const root = state.images.get(parentId);
+  if (!root) return [];
+  const siblings = [...state.images.values()].filter(image => image.parentId === parentId);
+  // Supabase sends UTC timestamps; use the ID as a stable tie-breaker for concurrent inserts.
+  siblings.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
+  return [root, ...siblings];
 }
 
 function albumMetadata(slot) {
-  const image = state.albums.get(slot);
-  return {
-    author: image?.author ?? '',
-    category: IMAGE_CATEGORIES.includes(image?.category) ? image.category : '',
-    ...metadataDrafts.get(slot),
-  };
+  return state.albums.get(slot) ?? metadataDrafts.get(slot) ?? {};
 }
 
-function isCustomAuthor(author) {
-  return Boolean(author) && (author === 'Outro' || !AUTHOR_OPTIONS.includes(author));
+function isSaving(image, field) {
+  return pendingFields.get(image)?.has(field) ?? false;
 }
 
 function renderMetadata(slot) {
   if (activeIndex + 1 !== slot) return;
-  const { author, category } = albumMetadata(slot);
-  const custom = isCustomAuthor(author);
-  authorCaption.textContent = author || 'Autor';
-  categoryCaption.textContent = category || 'Categoria';
-  customAuthorOption.hidden = !custom;
-  customAuthorOption.textContent = custom ? author : '';
-  authorSelect.value = custom ? 'custom' : author;
-  categorySelect.value = category;
-
-  const saving = state.albums.has(slot) ? metadataDrafts.get(slot) : null;
+  const image = state.albums.get(slot);
   const unavailable = busySlots.has(slot) || !state.source;
-  authorSelect.disabled = unavailable || Boolean(saving && Object.hasOwn(saving, 'author'));
-  categorySelect.disabled = unavailable || Boolean(saving && Object.hasOwn(saving, 'category'));
+  captions.render(albumMetadata(slot), {
+    authorDisabled: unavailable || isSaving(image, 'author'),
+    categoryDisabled: unavailable || isSaving(image, 'category'),
+  });
 }
 
-async function changeCaption(slot, field, value) {
-  const source = state.source;
-  if (!source || busySlots.has(slot) || albumMetadata(slot)[field] === value) return;
-  const image = state.albums.get(slot);
-  const draft = metadataDrafts.get(slot) ?? {};
-  if (image && Object.hasOwn(draft, field)) return;
-  draft[field] = value;
-  metadataDrafts.set(slot, draft);
-  renderMetadata(slot);
-  if (!image) return;
+function refreshImage(image) {
+  if (image.slot === activeIndex + 1) updateCaption();
+  variations.refresh();
+}
 
+async function persistField(image, field, save, optimisticValue = image[field]) {
+  const fields = pendingFields.get(image) ?? new Set();
+  if (fields.has(field)) return;
+  fields.add(field);
+  pendingFields.set(image, fields);
+  const previous = image[field];
+  image[field] = optimisticValue;
+  refreshImage(image);
   try {
-    const saved = await source.updateImageMetadata({ slot, [field]: value || null });
-    if (source === state.source) image[field] = saved[field];
+    const saved = await save();
+    image[field] = saved[field];
   } catch (error) {
-    reportSlot(`Álbum ${albumNumber(slot)}: ${error.message}`);
+    image[field] = previous;
+    throw error;
   } finally {
-    delete draft[field];
-    if (!Object.keys(draft).length) metadataDrafts.delete(slot);
+    fields.delete(field);
+    refreshImage(image);
+  }
+}
+
+async function editImage(image, field, value) {
+  const updated = field === 'favorite' ? value : value || null;
+  if (image[field] === updated) return;
+  const source = state.source;
+  if (!source) throw new Error('A conexão com o catálogo está indisponível.');
+  await persistField(image, field, () => source.updateImageMetadata({ id: image.id, [field]: updated }), updated);
+}
+
+function changeCaption(slot, field, value) {
+  if (!state.source || busySlots.has(slot)) return;
+  const image = state.albums.get(slot);
+  if (image) {
+    void editImage(image, field, value).catch(error => reportSlot(`Álbum ${albumNumber(slot)}: ${error.message}`));
+  } else {
+    metadataDrafts.set(slot, { ...metadataDrafts.get(slot), [field]: value });
     renderMetadata(slot);
   }
 }
@@ -160,7 +205,7 @@ function updateCaption() {
 }
 
 function renderCollection() {
-  byId('flow').hidden = state.pending;
+  byId('flow').hidden = state.pending || Boolean(state.error);
   byId('loading').hidden = !state.pending;
   const error = byId('empty');
   error.hidden = !state.error;
@@ -244,7 +289,7 @@ function createCover(album, slot) {
     if (state.pending || busySlots.has(album)) return;
     const image = state.albums.get(album);
     if (image) {
-      openDetail(image, album);
+      openDetail(image);
       return;
     }
     if (!state.source) {
@@ -301,9 +346,9 @@ function updateCover(cover, active) {
   cover.replaceChildren(content, reflection);
 }
 
-function openDetail(image, album) {
+function openDetail(image) {
   const photo = byId('detail-image');
-  photo.alt = `Foto do álbum ${albumNumber(album)}`;
+  photo.alt = image.parentId ? (image.title || 'Variação da capa') : `Foto do álbum ${albumNumber(image.slot)}`;
   photo.src = image.src;
   detail.showModal();
 }
@@ -315,9 +360,11 @@ function renderAlbum(album) {
   if (activeIndex + 1 === album) updateCaption();
 }
 
-function albumEntries(images) {
-  return new Map(images.filter(image => Number.isInteger(image.slot) && image.slot >= 1 && image.slot <= SLOT_COUNT)
-    .map(image => [image.slot, image]));
+function rememberImage(image) {
+  state.images.set(image.id, image);
+  if (Number.isInteger(image.slot) && image.slot >= 1 && image.slot <= SLOT_COUNT) {
+    state.albums.set(image.slot, image);
+  }
 }
 
 function reportSlot(message) {
@@ -330,7 +377,8 @@ async function refreshTakenSlot(slot, source) {
     const images = await source.listImages();
     const image = images.find(item => item.slot === slot);
     if (image && state.source === source) {
-      state.albums.set(slot, image);
+      rememberImage(image);
+      for (const variant of images.filter(item => item.parentId === image.id)) rememberImage(variant);
       metadataDrafts.delete(slot);
     }
   } catch (error) {
@@ -354,7 +402,7 @@ async function prepareSlotUpload(slot, file) {
       slot,
     });
     if (state.source === source) {
-      state.albums.set(slot, image);
+      rememberImage(image);
       metadataDrafts.delete(slot);
     }
     reportSlot(`Foto ${slot} salva no Supabase.`);
@@ -367,10 +415,28 @@ async function prepareSlotUpload(slot, file) {
   }
 }
 
+// Keep a retry tied to the same upload if the server saved it before the connection dropped.
+const variationUploadIds = new Map();
+async function uploadVariation(parent, file) {
+  const source = state.source;
+  if (!source) throw new Error('A conexão com o catálogo está indisponível.');
+  const uploadKey = JSON.stringify([parent.id, file.name, file.size, file.lastModified]);
+  const clientUploadId = variationUploadIds.get(uploadKey) ?? crypto.randomUUID();
+  const photo = await prepareSlotPhoto(file);
+  variationUploadIds.set(uploadKey, clientUploadId);
+  const image = await source.uploadImage({
+    file: photo, parentId: parent.id, clientUploadId,
+    title: (file.name.replace(/\.[^.]+$/, '').trim() || 'Variação').slice(0, 120),
+    author: parent.author, category: IMAGE_CATEGORIES.includes(parent.category) ? parent.category : null,
+  });
+  variationUploadIds.delete(uploadKey);
+  if (source === state.source && !state.images.has(image.id)) rememberImage(image);
+  return state.images.get(image.id) ?? image;
+}
+
 async function connectCatalog() {
   if (state.pending) return;
   const config = getCatalogConfig();
-  state.config = config;
   state.source = null;
 
   if (!config) {
@@ -385,8 +451,11 @@ async function connectCatalog() {
   try {
     const source = createCatalogConnection(config);
     const images = await source.listImages();
-    state.albums = albumEntries(images);
+    state.albums.clear();
+    state.images.clear();
+    for (const image of images) rememberImage(image);
     state.source = source;
+    void importLocalFavorites(source, config.url);
   } catch (error) {
     state.error = error.message;
   } finally {
@@ -417,25 +486,14 @@ for (const select of [authorSelect, categorySelect]) {
   select.addEventListener('focus', settleCaption);
 }
 
-authorSelect.addEventListener('change', () => {
-  const slot = activeIndex + 1;
-  if (authorSelect.value !== 'other') {
-    void changeCaption(slot, 'author', authorSelect.value);
-    return;
-  }
-  authorDialogSlot = slot;
-  const { author } = albumMetadata(slot);
-  authorCustom.value = isCustomAuthor(author) ? author : '';
+function editCustomAuthor(image, onSave) {
+  applyCustomAuthor = onSave;
+  authorCustom.value = isCustomAuthor(image.author) ? image.author : '';
   authorCustom.setCustomValidity('');
-  // Keep the committed selection if the visitor cancels the dialog.
-  renderMetadata(slot);
   authorDialog.showModal();
   authorCustom.focus();
   authorCustom.select();
-});
-categorySelect.addEventListener('change', () => {
-  void changeCaption(activeIndex + 1, 'category', categorySelect.value);
-});
+}
 authorCustom.addEventListener('input', () => authorCustom.setCustomValidity(''));
 byId('cancel-author').addEventListener('click', () => authorDialog.close());
 byId('author-form').addEventListener('submit', event => {
@@ -446,12 +504,12 @@ byId('author-form').addEventListener('submit', event => {
     authorCustom.reportValidity();
     return;
   }
-  const slot = authorDialogSlot;
+  const apply = applyCustomAuthor;
   authorDialog.close();
-  if (slot) void changeCaption(slot, 'author', name);
+  if (apply) apply(name);
 });
 authorDialog.addEventListener('close', () => {
-  if (!authorDialog.open) authorDialogSlot = 0;
+  if (!authorDialog.open) applyCustomAuthor = null;
 });
 
 slotFile.addEventListener('change', () => {
@@ -464,14 +522,19 @@ slotFile.addEventListener('change', () => {
 byId('empty-action').addEventListener('click', connectCatalog);
 previousButton.addEventListener('click', () => motion.moveBy(-1));
 nextButton.addEventListener('click', () => motion.moveBy(1));
+variationsToggle.addEventListener('click', openVariations);
 favoriteButton.addEventListener('click', () => {
   const image = state.albums.get(activeIndex + 1);
-  if (image) toggleFavorite(image);
+  if (image) void editImage(image, 'favorite', !image.favorite).catch(error => reportSlot(error.message));
 });
 viewport.addEventListener('keydown', event => {
-  if (state.pending || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+  if (state.pending || !['ArrowLeft', 'ArrowRight', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
   event.preventDefault();
   if (event.target !== viewport) viewport.focus({ preventScroll: true });
+  if (event.key === 'ArrowUp') {
+    openVariations();
+    return;
+  }
   const cycleStart = Math.round(motion.getPosition()) - activeIndex;
   if (event.key === 'Home') motion.moveTo(cycleStart);
   if (event.key === 'End') motion.moveTo(cycleStart + SLOT_COUNT - 1);

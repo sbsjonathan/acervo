@@ -37,13 +37,47 @@ alter table public.catalog_images
 create index if not exists catalog_images_date_id_idx
   on public.catalog_images (created_at desc, id desc);
 
+alter table public.catalog_images
+  add column if not exists parent_id uuid,
+  add column if not exists client_upload_id uuid,
+  add column if not exists favorite boolean,
+  add column if not exists cover_id uuid generated always as (case when slot is not null then id end) stored;
+
+create unique index if not exists catalog_images_cover_id_key
+  on public.catalog_images (cover_id);
+create unique index if not exists catalog_images_client_upload_id_key
+  on public.catalog_images (client_upload_id) where client_upload_id is not null;
+create index if not exists catalog_images_parent_id_idx
+  on public.catalog_images (parent_id) where parent_id is not null;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conrelid = 'public.catalog_images'::regclass and conname = 'catalog_images_variant_check'
+  ) then
+    alter table public.catalog_images add constraint catalog_images_variant_check check (
+      (parent_id is null or slot is null) and (client_upload_id is null or parent_id is not null)
+    );
+  end if;
+  if not exists (
+    select 1 from pg_constraint
+    where conrelid = 'public.catalog_images'::regclass and conname = 'catalog_images_parent_id_fkey'
+  ) then
+    alter table public.catalog_images
+      add constraint catalog_images_parent_id_fkey foreign key (parent_id)
+      references public.catalog_images (cover_id) on delete cascade;
+  end if;
+end
+$$;
+
 alter table public.catalog_images enable row level security;
 revoke all on table public.catalog_images from public, anon, authenticated;
 grant select on table public.catalog_images to anon, authenticated;
 grant insert on table public.catalog_images to authenticated;
 revoke update on table public.catalog_images from service_role;
 grant select, insert on table public.catalog_images to service_role;
-grant update (author, category) on table public.catalog_images to service_role;
+grant update (author, category, favorite) on table public.catalog_images to service_role;
 
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
 values (
@@ -79,6 +113,8 @@ create policy catalog_images_insert
   with check (
     owner_id = (select auth.uid())
     and slot is null
+    and parent_id is null
+    and favorite is null
     and exists (
       select 1 from storage.objects as object
       where object.bucket_id = 'catalog-images' and object.name = storage_path

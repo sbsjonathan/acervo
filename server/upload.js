@@ -1,6 +1,6 @@
 import {
   BUCKET, TABLE, SLOT_COUNT, IMAGE_TYPES, MAX_IMAGE_BYTES,
-  isMissingCatalogColumn, jwtRole, supabaseOrigin, normalizeImage, normalizeMetadataPatch, normalizeSlot, toImage,
+  isMissingCatalogColumn, jwtRole, supabaseOrigin, normalizeImage, normalizeImageTarget, normalizeMetadataPatch, toImage,
 } from '../public/supabase.js';
 
 const MAX_REQUEST_BYTES = MAX_IMAGE_BYTES + 32 * 1024;
@@ -31,6 +31,23 @@ function metadataMigrationRequired() {
     code: 'metadata_schema_missing',
     error: 'Execute o SQL atualizado no projeto Supabase para salvar autor e categoria.',
   }, 503);
+}
+
+function variantMigrationRequired() {
+  return json({ code: 'variant_schema_missing', error: 'Execute o SQL atualizado para usar variações e favoritos.' }, 503);
+}
+
+function catalogSchemaError(error) {
+  if (isMissingCatalogColumn(error, 'slot')) return slotMigrationRequired();
+  if (isMissingCatalogColumn(error, 'author')) return metadataMigrationRequired();
+  if (['parent_id', 'client_upload_id', 'favorite'].some(column => isMissingCatalogColumn(error, column))) {
+    return variantMigrationRequired();
+  }
+  return null;
+}
+
+function missingCover() {
+  return json({ code: 'cover_not_found', error: 'A foto de capa desse álbum não foi encontrada.' }, 404);
 }
 
 async function readRequestBody(body, limit, limitMessage) {
@@ -113,14 +130,36 @@ function getSupabaseRequest(env) {
   return { url, request };
 }
 
-async function saveImage({ url, request }, { file, ...metadata }) {
-  const { slot } = metadata;
-  const check = await request(`${TABLE_PATH}?slot=eq.${slot}&select=id,author&limit=1`).catch(() => null);
-  const matches = await check?.json().catch(() => null);
-  if (isMissingCatalogColumn(matches, 'slot')) return slotMigrationRequired();
-  if (isMissingCatalogColumn(matches, 'author')) return metadataMigrationRequired();
-  if (!check?.ok || !Array.isArray(matches)) return uploadFailure();
-  if (matches.length) return occupiedSlot(slot);
+async function readCatalog(request, query) {
+  const response = await request(`${TABLE_PATH}?${query}`).catch(() => null);
+  return response?.json().catch(() => null);
+}
+
+async function previousUpload({ url, request }, { client_upload_id, parent_id }) {
+  if (!client_upload_id) return null;
+  const rows = await readCatalog(request, `client_upload_id=eq.${client_upload_id}&limit=1`);
+  if (!Array.isArray(rows)) return catalogSchemaError(rows) ?? uploadFailure();
+  const image = rows[0];
+  if (!image) return null;
+  if (image.parent_id !== parent_id) {
+    return json({ error: 'Este envio pertence a outro álbum.' }, 409);
+  }
+  return json(toImage(image, url), 200);
+}
+
+async function saveImage(supabase, { file, ...metadata }) {
+  const { url, request } = supabase;
+  const { slot, parent_id } = metadata;
+  const earlier = await previousUpload(supabase, metadata);
+  if (earlier) return earlier;
+
+  const query = parent_id
+    ? `id=eq.${parent_id}&slot=not.is.null&select=id,author,parent_id&limit=1`
+    : `slot=eq.${slot}&select=id,author&limit=1`;
+  const matches = await readCatalog(request, query);
+  if (!Array.isArray(matches)) return catalogSchemaError(matches) ?? uploadFailure();
+  if (parent_id && !matches.length) return missingCover();
+  if (!parent_id && matches.length) return occupiedSlot(slot);
 
   const id = crypto.randomUUID();
   const storagePath = `token/${id}.${IMAGE_TYPES[file.type]}`;
@@ -148,21 +187,21 @@ async function saveImage({ url, request }, { file, ...metadata }) {
   const result = await inserted?.json().catch(() => null);
   if (inserted?.ok && result?.[0]) return json(toImage(result[0], url), 201);
 
-  const lookup = await request(`${TABLE_PATH}?id=eq.${id}`).catch(() => null);
-  const recovered = lookup?.ok ? await lookup.json().catch(() => null) : null;
+  const recovered = await readCatalog(request, `id=eq.${id}`);
   if (recovered?.[0]) return json(toImage(recovered[0], url), 201);
 
   // Delete only when Supabase rejected the insert and confirms that the row is absent.
   if (inserted?.status >= 400 && inserted.status < 500 && Array.isArray(recovered) && !recovered.length) {
     await request(objectPath, { method: 'DELETE' }).catch(() => {});
   }
-  if (isMissingCatalogColumn(result, 'slot')) return slotMigrationRequired();
-  if (isMissingCatalogColumn(result, 'author')) return metadataMigrationRequired();
-  if (result?.code === '23505' &&
+  const schemaError = catalogSchemaError(result);
+  if (schemaError) return schemaError;
+  if (parent_id && result?.code === '23503') return missingCover();
+  if (!parent_id && result?.code === '23505' &&
       /catalog_images_slot_key|Key \(slot\)/i.test(`${result.message} ${result.details}`)) {
     return occupiedSlot(slot);
   }
-  return uploadFailure();
+  return await previousUpload(supabase, metadata) ?? uploadFailure();
 }
 
 async function updateMetadata(request, supabase) {
@@ -184,28 +223,41 @@ async function updateMetadata(request, supabase) {
     return json({ error: error instanceof SyntaxError ? 'Não foi possível ler os dados da edição.' : error.message }, 400);
   }
 
-  let slot;
+  let target;
   let metadata;
+  let onlyIfUnset;
   try {
     if (supabaseOrigin(data?.supabaseUrl) !== supabase.url) {
       return json({ error: 'Para editar, conecte o catálogo ao projeto Supabase configurado no servidor.' }, 409);
     }
-    slot = normalizeSlot(data.slot);
+    target = normalizeImageTarget(data);
     metadata = normalizeMetadataPatch(data);
+    onlyIfUnset = data.onlyIfUnset === true;
+    if (onlyIfUnset && (!target.id || metadata.favorite !== true || Object.keys(metadata).length !== 1)) {
+      throw new Error('Informe uma foto válida para importar seu favorito.');
+    }
   } catch (error) {
     return json({ error: error.message }, 400);
   }
 
-  const response = await supabase.request(`${TABLE_PATH}?slot=eq.${slot}`, {
+  const query = target.id ? `id=eq.${target.id}` : `slot=eq.${target.slot}`;
+  const condition = onlyIfUnset ? '&favorite=is.null' : '';
+  const response = await supabase.request(`${TABLE_PATH}?${query}${condition}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json', Prefer: 'return=representation' },
     body: JSON.stringify(metadata),
   }).catch(() => null);
-  const rows = await response?.json().catch(() => null);
-  if (isMissingCatalogColumn(rows, 'author')) return metadataMigrationRequired();
-  if (isMissingCatalogColumn(rows, 'slot')) return slotMigrationRequired();
+  let rows = await response?.json().catch(() => null);
+  const schemaError = catalogSchemaError(rows);
+  if (schemaError) return schemaError;
   if (!response?.ok || !Array.isArray(rows)) return json({ error: 'Não foi possível salvar a edição no Supabase.' }, 502);
-  if (!rows.length) return json({ error: `O álbum ${slot} ainda está vazio.` }, 404);
+  if (!rows.length && onlyIfUnset) {
+    rows = await readCatalog(supabase.request, query);
+    if (!Array.isArray(rows)) return json({ error: 'Não foi possível carregar o favorito no Supabase.' }, 502);
+  }
+  if (!rows.length) {
+    return json({ error: target.id ? 'A foto não foi encontrada.' : `O álbum ${target.slot} ainda está vazio.` }, 404);
+  }
   return json(toImage(rows[0], supabase.url), 200);
 }
 
@@ -249,6 +301,8 @@ export async function handleImageRequest(request, env) {
         description: form.get('description'),
         tags: form.getAll('tags'),
         slot: form.get('slot'),
+        parentId: form.get('parent_id') ?? form.get('parentId'),
+        clientUploadId: form.get('client_upload_id') ?? form.get('clientUploadId'),
       }),
       width,
       height,

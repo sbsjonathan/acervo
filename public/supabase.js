@@ -86,6 +86,8 @@ export function toImage(row, url) {
     fileName: row.file_name,
     fileSize: row.file_size,
     slot: row.slot ?? null,
+    parentId: row.parent_id ?? null,
+    favorite: row.favorite === true,
   };
 }
 
@@ -118,10 +120,13 @@ export function normalizeImageMetadata({ author, category }) {
 }
 
 export function normalizeMetadataPatch(fields) {
-  const keys = ['author', 'category'].filter(key => Object.hasOwn(fields, key));
-  if (!keys.length) throw new Error('Informe autor ou categoria para editar a foto.');
+  const keys = ['author', 'category', 'favorite'].filter(key => Object.hasOwn(fields, key));
+  if (!keys.length) throw new Error('Informe autor, categoria ou favorito para editar a foto.');
+  if (keys.includes('favorite') && typeof fields.favorite !== 'boolean') {
+    throw new Error('Informe se a foto é favorita.');
+  }
 
-  const metadata = normalizeImageMetadata(fields);
+  const metadata = { ...normalizeImageMetadata(fields), favorite: fields.favorite };
   return Object.fromEntries(keys.map(key => [key, metadata[key]]));
 }
 
@@ -133,7 +138,20 @@ export function normalizeSlot(slot) {
   return position;
 }
 
-export function normalizeImage({ file, title, author, category, description, tags, slot }) {
+function normalizeUuid(value) {
+  if (typeof value !== 'string' || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value)) {
+    throw new Error('O identificador da foto é inválido.');
+  }
+  return value.toLowerCase();
+}
+
+export function normalizeImageTarget({ id, slot }) {
+  if (id == null) return { slot: normalizeSlot(slot) };
+  if (slot != null) throw new Error('Escolha apenas uma foto para editar.');
+  return { id: normalizeUuid(id) };
+}
+
+export function normalizeImage({ file, title, author, category, description, tags, slot, parentId, clientUploadId }) {
   if (!(file instanceof File) || !Object.hasOwn(IMAGE_TYPES, file.type) || !file.size) {
     throw new Error('Escolha uma imagem JPEG, PNG, WebP, GIF ou AVIF.');
   }
@@ -155,12 +173,21 @@ export function normalizeImage({ file, title, author, category, description, tag
     throw new Error('Use até 15 tags, com até 40 caracteres cada.');
   }
 
+  let location;
+  if (parentId == null) {
+    location = { slot: normalizeSlot(slot) };
+  } else {
+    if (slot != null) throw new Error('Uma variação deve pertencer a uma foto de capa.');
+    location = { parent_id: normalizeUuid(parentId) };
+    if (clientUploadId != null) location.client_upload_id = normalizeUuid(clientUploadId);
+  }
+
   return {
     file,
     title: name,
     description: note,
     tags: keywords,
-    slot: normalizeSlot(slot),
+    ...location,
     ...normalizeImageMetadata({ author, category }),
   };
 }
@@ -174,7 +201,7 @@ export function createCatalogConnection(config) {
   async function listImages() {
     const images = [];
     let cursor;
-    let optionalColumns = ['slot', 'author'];
+    let optionalColumns = ['slot', 'author', 'parent_id', 'favorite'];
 
     for (;;) {
       const params = new URLSearchParams({
@@ -250,12 +277,17 @@ export function createCatalogConnection(config) {
 
   async function updateImageMetadata(fields) {
     const metadata = {
-      slot: normalizeSlot(fields.slot),
+      ...normalizeImageTarget(fields),
       ...normalizeMetadataPatch(fields),
       supabaseUrl: url,
     };
     return saveImage('PATCH', JSON.stringify(metadata), { 'Content-Type': 'application/json' });
   }
 
-  return { listImages, uploadImage, updateImageMetadata };
+  async function importFavorite(id) {
+    const metadata = { id: normalizeUuid(id), favorite: true, onlyIfUnset: true, supabaseUrl: url };
+    return saveImage('PATCH', JSON.stringify(metadata), { 'Content-Type': 'application/json' });
+  }
+
+  return { listImages, uploadImage, updateImageMetadata, importFavorite };
 }
