@@ -1,6 +1,6 @@
 import { createFlowMotion } from './flow-motion.js';
 import { prepareSlotPhoto } from './slot-photo.js';
-import { createCatalogConnection, getCatalogConfig, saveCatalogConfig, clearCatalogConfig, SLOT_COUNT } from './supabase.js';
+import { createCatalogConnection, getCatalogConfig, SLOT_COUNT } from './supabase.js';
 
 const byId = id => document.getElementById(id);
 const element = (tag, className, content) => {
@@ -9,14 +9,9 @@ const element = (tag, className, content) => {
   if (content) node.textContent = content;
   return node;
 };
-const settings = byId('settings-dialog');
-const settingsForm = byId('settings-form');
-const settingsError = byId('settings-error');
 const detail = byId('detail-dialog');
 const slotFile = byId('slot-file');
 const slotAnnouncement = byId('slot-announcement');
-const slotTokenDialog = byId('slot-token-dialog');
-const slotTokenForm = byId('slot-token-form');
 const busySlots = new Set();
 const gallery = byId('gallery');
 const viewport = byId('flow-viewport');
@@ -40,9 +35,7 @@ let activeIndex = 0;
 let activeSlot = null;
 let step = 128;
 let radius = 3;
-let uploadToken = '';
 let pickerSlot = 0;
-let deferredSlotUpload = null;
 const covers = new Map();
 const motion = createFlowMotion(viewport, {
   getStep: () => state.pending ? 0 : step,
@@ -52,7 +45,6 @@ const motion = createFlowMotion(viewport, {
   },
 });
 let toastTimer;
-let loadId = 0;
 
 function readFavorites() {
   try {
@@ -190,6 +182,10 @@ function createCover(album, slot) {
       openDetail(image, album);
       return;
     }
+    if (!state.source) {
+      reportSlot('O envio ficará disponível quando o Acervo estiver conectado ao Supabase.');
+      return;
+    }
     pickerSlot = album;
     slotFile.value = '';
     slotFile.click();
@@ -264,137 +260,66 @@ function reportSlot(message) {
   showToast(message);
 }
 
-function deferSlotUpload(job, waiting) {
-  if (deferredSlotUpload && deferredSlotUpload !== job) {
-    throw new Error('Conclua o envio anterior e escolha esta foto novamente.');
-  }
-  deferredSlotUpload = job;
-  job.waiting = waiting;
-}
-
-function finishSlotUpload(job) {
-  if (deferredSlotUpload === job) deferredSlotUpload = null;
-  busySlots.delete(job.slot);
-  renderAlbum(job.slot);
-}
-
-function requestSlotToken(job, message = '') {
-  deferSlotUpload(job, 'token');
-  slotTokenForm.reset();
-  slotTokenForm.querySelector('.form-message').textContent = message;
-  slotTokenDialog.showModal();
-}
-
-async function storeSlotUpload(job, token) {
-  const source = state.source;
-  const image = await source.uploadImage({
-    file: job.file,
-    title: `Foto ${albumNumber(job.slot)}`,
-    category: 'Fotos do aparelho',
-    slot: job.slot,
-  }, token);
-  if (state.source === source) {
-    uploadToken = token.trim();
-    state.albums.set(job.slot, image);
-  }
-  finishSlotUpload(job);
-  reportSlot(`Foto ${job.slot} salva no Supabase.`);
-}
-
-async function refreshTakenSlot(slot) {
-  const source = state.source;
-  if (!source) return;
+async function refreshTakenSlot(slot, source) {
   try {
     const images = await source.listImages();
     const image = images.find(item => item.slot === slot);
     if (image && state.source === source) state.albums.set(slot, image);
-  } catch {}
-}
-
-async function continueSlotUpload(job) {
-  try {
-    if (state.albums.has(job.slot)) {
-      finishSlotUpload(job);
-      reportSlot(`O álbum ${job.slot} já tem uma foto.`);
-    } else if (!state.source) {
-      deferSlotUpload(job, 'connection');
-      openSettings();
-    } else if (!uploadToken) {
-      requestSlotToken(job);
-    } else {
-      const token = uploadToken;
-      try {
-        await storeSlotUpload(job, token);
-      } catch (error) {
-        if (error.status !== 401 && error.status !== 403) throw error;
-        if (uploadToken === token) uploadToken = '';
-        requestSlotToken(job, 'Informe um token de envio válido para salvar esta foto.');
-      }
-    }
   } catch (error) {
-    if (error.code === 'slot_occupied') await refreshTakenSlot(job.slot);
-    finishSlotUpload(job);
-    reportSlot(error.message);
+    console.warn('O álbum ocupado será atualizado quando a galeria for recarregada.', error);
   }
 }
 
 async function prepareSlotUpload(slot, file) {
-  const job = { slot, file: null, waiting: null };
+  const source = state.source;
+  if (!source || busySlots.has(slot)) return;
   busySlots.add(slot);
-  renderAlbum(job.slot);
+  renderAlbum(slot);
   slotAnnouncement.textContent = `Preparando foto ${slot}.`;
   try {
-    job.file = await prepareSlotPhoto(file);
-    await continueSlotUpload(job);
+    const photo = await prepareSlotPhoto(file);
+    const image = await source.uploadImage({
+      file: photo,
+      title: `Foto ${albumNumber(slot)}`,
+      category: 'Fotos do aparelho',
+      slot,
+    });
+    if (state.source === source) state.albums.set(slot, image);
+    reportSlot(`Foto ${slot} salva no Supabase.`);
   } catch (error) {
-    finishSlotUpload(job);
+    if (error.code === 'slot_occupied') await refreshTakenSlot(slot, source);
     reportSlot(error.message);
+  } finally {
+    busySlots.delete(slot);
+    renderAlbum(slot);
   }
 }
 
-function updateConnection() {
-  const connected = Boolean(state.source && !state.pending && !state.error);
-  byId('settings-button').dataset.connected = String(connected);
-  byId('connection-label').textContent = connected ? 'Supabase conectado' : 'Conectar Supabase';
-}
-
-function openSettings() {
-  if (settings.open) return;
-  settingsForm.elements.url.value = state.config?.url ?? '';
-  settingsForm.elements.key.value = state.config?.key ?? '';
-  settingsError.textContent = deferredSlotUpload?.waiting === 'connection'
-    ? 'Conecte o Supabase para salvar a foto que você selecionou.'
-    : state.error;
-  byId('disconnect').hidden = !state.config || Boolean(globalThis.CATALOGO_SUPABASE && state.config.url === globalThis.CATALOGO_SUPABASE.url && state.config.key === globalThis.CATALOGO_SUPABASE.key);
-  updateConnection();
-  settings.showModal();
-}
-
-async function useSavedConnection() {
+async function connectCatalog() {
+  if (state.pending) return;
   const config = getCatalogConfig();
-  const currentLoad = ++loadId;
-  state.config = config ?? null;
+  state.config = config;
   state.source = null;
+
+  if (!config) {
+    state.error = 'O Acervo está aguardando a configuração do Supabase.';
+    renderCollection();
+    return;
+  }
+
   state.error = '';
-  state.pending = Boolean(config);
-  state.albums = new Map();
+  state.pending = true;
   renderCollection();
-  updateConnection();
-  if (!config) return;
   try {
     const source = createCatalogConnection(config);
     const images = await source.listImages();
-    if (currentLoad !== loadId) return;
-    state.source = source;
     state.albums = albumEntries(images);
+    state.source = source;
   } catch (error) {
-    if (currentLoad === loadId) state.error = error.message;
+    state.error = error.message;
   } finally {
-    if (currentLoad === loadId) {
-      state.pending = false;
-        renderCollection();
-      updateConnection();
-    }
+    state.pending = false;
+    renderCollection();
   }
 }
 
@@ -406,79 +331,13 @@ function showToast(message) {
   toastTimer = setTimeout(() => { toast.hidden = true; }, 3800);
 }
 
-function submit(form, callback) {
-  form.addEventListener('submit', async event => {
-    event.preventDefault();
-    const submitButton = form.querySelector('[type="submit"]');
-    if (submitButton.disabled) return;
-    const message = form.querySelector('.form-message');
-    message.textContent = '';
-    submitButton.disabled = true;
-    try {
-      await callback(Object.fromEntries(new FormData(form)));
-    } catch (error) {
-      message.textContent = error.message;
-    } finally {
-      submitButton.disabled = false;
-    }
-  });
-}
-
-submit(settingsForm, async fields => {
-  const source = createCatalogConnection(fields);
-  const images = await source.listImages();
-  const config = saveCatalogConfig(fields);
-  ++loadId;
-  if (state.config?.url !== config.url) uploadToken = '';
-  state.config = config;
-  state.source = source;
-  state.albums = albumEntries(images);
-  state.pending = false;
-  state.error = '';
-  renderCollection();
-  updateConnection();
-  const waiting = deferredSlotUpload?.waiting === 'connection' ? deferredSlotUpload : null;
-  if (waiting) waiting.waiting = null;
-  settings.close();
-  if (waiting) await continueSlotUpload(waiting);
-  else showToast('Supabase conectado.');
+detail.querySelector('[data-close]').addEventListener('click', () => detail.close());
+detail.addEventListener('click', event => {
+  if (event.target !== detail) return;
+  const box = detail.getBoundingClientRect();
+  if (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom) detail.close();
 });
 
-submit(slotTokenForm, async ({ token }) => {
-  const job = deferredSlotUpload;
-  if (job?.waiting !== 'token') return;
-  if (!token.trim()) throw new Error('Informe o token de envio.');
-  try {
-    await storeSlotUpload(job, token);
-    slotTokenDialog.close();
-  } catch (error) {
-    if (error.code !== 'slot_occupied') throw error;
-    await refreshTakenSlot(job.slot);
-    finishSlotUpload(job);
-    slotTokenDialog.close();
-    reportSlot(error.message);
-  }
-});
-
-for (const dialog of document.querySelectorAll('dialog')) {
-  const close = () => {
-    if (!dialog.querySelector('[type="submit"]:disabled')) dialog.close();
-  };
-  dialog.querySelector('[data-close]').addEventListener('click', close);
-  dialog.addEventListener('click', event => {
-    if (event.target !== dialog) return;
-    const box = dialog.getBoundingClientRect();
-    if (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom) close();
-  });
-  dialog.addEventListener('cancel', event => {
-    if (dialog.querySelector('[type="submit"]:disabled')) event.preventDefault();
-  });
-}
-for (const [dialog, waiting] of [[settings, 'connection'], [slotTokenDialog, 'token']]) {
-  dialog.addEventListener('close', () => {
-    if (!dialog.open && deferredSlotUpload?.waiting === waiting) finishSlotUpload(deferredSlotUpload);
-  });
-}
 slotFile.addEventListener('change', () => {
   const slot = pickerSlot;
   const file = slotFile.files?.[0];
@@ -486,16 +345,7 @@ slotFile.addEventListener('change', () => {
   slotFile.value = '';
   if (slot && file) void prepareSlotUpload(slot, file);
 });
-byId('disconnect').addEventListener('click', () => {
-  if (settingsForm.querySelector('[type="submit"]').disabled) return;
-  uploadToken = '';
-  clearCatalogConfig();
-  settings.close();
-  useSavedConnection();
-  showToast('Conexão removida deste navegador.');
-});
-byId('settings-button').addEventListener('click', openSettings);
-byId('empty-action').addEventListener('click', openSettings);
+byId('empty-action').addEventListener('click', connectCatalog);
 previousButton.addEventListener('click', () => motion.moveBy(-1));
 nextButton.addEventListener('click', () => motion.moveBy(1));
 favoriteButton.addEventListener('click', () => {
@@ -522,4 +372,4 @@ detail.addEventListener('close', () => {
   if (!detail.open) byId('detail-image').removeAttribute('src');
 });
 
-useSavedConnection();
+connectCatalog();

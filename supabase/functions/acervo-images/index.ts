@@ -37,14 +37,13 @@ Deno.serve(async (request) => {
 
   headers.set('Access-Control-Allow-Origin', allowedOrigin);
   headers.set('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  headers.set('Access-Control-Allow-Headers', 'authorization, apikey, content-type');
+  headers.set('Access-Control-Allow-Headers', 'apikey, content-type');
 
   if (request.method === 'OPTIONS') {
     return new Response(null, { status: 204, headers });
   }
 
   const response = await handleImageUpload(request, {
-    ACERVO_UPLOAD_TOKEN: Deno.env.get('ACERVO_UPLOAD_TOKEN'),
     SUPABASE_URL: Deno.env.get('SUPABASE_URL'),
     SUPABASE_SECRET_KEY: supabaseSecretKey(),
   });

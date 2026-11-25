@@ -1,4 +1,3 @@
-const CONFIG_KEY = 'catalogo-imagens.supabase';
 const PAGE_SIZE = 200;
 const IMAGE_COLUMNS = 'id,title,category,description,tags,storage_path,created_at,width,height,file_name,file_size';
 
@@ -56,28 +55,11 @@ function normalizeConfig(config) {
 }
 
 export function getCatalogConfig() {
-  let stored;
   try {
-    stored = JSON.parse(localStorage.getItem(CONFIG_KEY));
-  } catch {
-    // The deployment configuration also works when browser storage is unavailable.
-  }
-
-  try {
-    return normalizeConfig(stored ?? globalThis.CATALOGO_SUPABASE);
+    return normalizeConfig(globalThis.CATALOGO_SUPABASE);
   } catch {
     return null;
   }
-}
-
-export function saveCatalogConfig(config) {
-  const normalized = normalizeConfig(config);
-  localStorage.setItem(CONFIG_KEY, JSON.stringify(normalized));
-  return normalized;
-}
-
-export function clearCatalogConfig() {
-  localStorage.removeItem(CONFIG_KEY);
 }
 
 export function isMissingSlotColumn(error) {
@@ -199,9 +181,7 @@ export function createCatalogConnection(config) {
     }
   }
 
-  async function uploadImage(fields, token) {
-    const uploadToken = String(token ?? '').trim();
-    if (!uploadToken) throw new Error('Informe o token de envio.');
+  async function uploadImage(fields) {
     const { file, tags, ...metadata } = normalizeImage(fields);
     const dimensions = await imageDimensions(file);
     const form = new FormData();
@@ -215,7 +195,7 @@ export function createCatalogConnection(config) {
     try {
       response = await fetch(`${url}/functions/v1/acervo-images`, {
         method: 'POST',
-        headers: { apikey: key, Authorization: `Bearer ${uploadToken}` },
+        headers: { apikey: key },
         body: form,
         redirect: 'error',
       });

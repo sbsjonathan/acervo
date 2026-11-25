@@ -1,21 +1,22 @@
 # Acervo no GitHub Pages
 
-O site reúne 30 capas de álbum em Cover Flow. A página roda no GitHub Pages e o Supabase guarda as fotos, suas posições e a função de envio.
+O Acervo reúne 30 capas de álbum em Cover Flow. A página roda no GitHub Pages e o Supabase guarda as fotos e suas posições.
 
-## Publicar no GitHub Pages
+## Publicação
 
-Envie este código a um repositório do GitHub e selecione **Settings → Pages → Build and deployment → Source → GitHub Actions**. O workflow [pages.yml](.github/workflows/pages.yml) publica a branch `main` e também pode ser executado pelo botão **Run workflow**. Para outra branch, ajuste o workflow e as regras do ambiente `github-pages` no repositório.
+O workflow [pages.yml](.github/workflows/pages.yml) publica a branch `main` e também pode ser executado pelo botão **Run workflow**. A configuração em **Settings → Pages → Build and deployment → Source** é **GitHub Actions**.
 
-A publicação usa links relativos e funciona no caminho `https://SEU-USUARIO.github.io/REPOSITORIO/`. O Pages define a visibilidade da página conforme as opções do repositório e do plano do GitHub.
+## Configuração do Supabase
 
-## Configurar o Supabase
+1. Aplique [schema.sql](supabase/schema.sql) ao projeto que recebe as fotos.
+2. Configure na função o segredo `GITHUB_PAGES_ORIGIN` com a origem exata da página, como `https://sbsjonathan.github.io`.
+3. Publique a função com `supabase functions deploy acervo-images --remote=SEU-PROJETO --use-api`.
+4. Preencha [public/config.js](public/config.js) com a URL do projeto e uma chave pública `publishable` ou `anon`. O GitHub Actions publica essa configuração junto com a página.
 
-1. Execute [schema.sql](supabase/schema.sql) no **SQL Editor**. Para uma instalação do Acervo já migrada para os 30 álbuns, o esquema é o mesmo.
-2. Configure o segredo `ACERVO_UPLOAD_TOKEN` para a função. Use o token já adotado ou gere um valor novo com `openssl rand -hex 32`.
-3. Configure `GITHUB_PAGES_ORIGIN` com a origem exata da página, como `https://SEU-USUARIO.github.io`, sem a barra final e sem o caminho do repositório. Use a origem do domínio personalizado caso adote um.
-4. Publique a função `acervo-images` com o Supabase CLI executando `supabase functions deploy acervo-images --project-ref SEU-PROJETO --use-api` na raiz deste código.
-5. Abra o Acervo e selecione **Conectar Supabase** no rodapé. Informe a URL do projeto e a chave pública `publishable` ou `anon`. Para compartilhar a configuração com todos os navegadores, defina esses dois valores em [public/config.js](public/config.js) antes de publicar.
+Qualquer visitante pode preencher um álbum vazio. O banco protege a posição já preenchida e a função usa a chave de serviço do Supabase no servidor. O esquema disponibiliza leitura pública das fotos.
 
-Ao tocar no **+** de uma capa vazia, escolha a foto e informe o token de envio quando solicitado. A função valida o token e usa a chave de serviço no servidor. O esquema disponibiliza leitura pública das imagens no Supabase.
+Ao tocar no **+** de uma capa vazia, escolha a foto do aparelho. O Acervo envia o arquivo assim que a seleção termina.
 
-Para conferir os arquivos estáticos localmente, execute `bash scripts/build-pages.sh` e sirva a pasta `dist`.
+## Teste local
+
+Execute `bash scripts/build-pages.sh` e sirva a pasta `dist`.

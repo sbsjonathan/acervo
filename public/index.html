@@ -18,7 +18,6 @@
     <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
     <symbol id="i-back" viewBox="0 0 24 24"><path d="m14.5 5.5-6.5 6.5 6.5 6.5"/></symbol>
     <symbol id="i-next" viewBox="0 0 24 24"><path d="m9.5 5.5 6.5 6.5-6.5 6.5"/></symbol>
-    <symbol id="i-database" viewBox="0 0 24 24"><ellipse cx="12" cy="5.5" rx="7.5" ry="2.8"/><path d="M4.5 5.5v6c0 1.6 3.4 2.8 7.5 2.8s7.5-1.2 7.5-2.8v-6m-15 6v6c0 1.6 3.4 2.8 7.5 2.8s7.5-1.2 7.5-2.8v-6"/></symbol>
     <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 15V4m-4 4 4-4 4 4M4 14v5a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-5"/></symbol>
     <symbol id="i-image" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="15.5" cy="8.5" r="1.5"/><path d="m3 17 5-5 4.5 4.5L16 13l5 5"/></symbol>
   </svg>
@@ -48,45 +47,12 @@
         <span class="empty-icon"><svg aria-hidden="true"><use href="#i-image"/></svg></span>
         <h3 id="empty-title">Não foi possível carregar as fotos</h3>
         <p id="empty-copy"></p>
-        <button class="button secondary" id="empty-action" type="button">Ver conexão</button>
+        <button class="button secondary" id="empty-action" type="button">Tentar novamente</button>
       </div>
     </div>
     <p class="visually-hidden" id="slot-announcement" role="status" aria-atomic="true"></p>
     <input id="slot-file" type="file" accept="image/*" hidden>
   </main>
-
-  <footer class="shell site-footer">
-    <button class="connection-button" id="settings-button" type="button"><svg aria-hidden="true"><use href="#i-database"/></svg><span id="connection-label">Conectar Supabase</span></button>
-  </footer>
-
-  <dialog class="dialog" id="settings-dialog" aria-labelledby="settings-title">
-    <div class="dialog-header">
-      <div><h2 id="settings-title">Conexão com Supabase</h2><p>Conecte a galeria com o token público do seu projeto.</p></div>
-      <button class="icon-button" type="button" data-close aria-label="Fechar"><svg aria-hidden="true"><use href="#i-close"/></svg></button>
-    </div>
-    <form id="settings-form">
-      <label>URL do projeto<input type="url" name="url" placeholder="https://seu-projeto.supabase.co" autocomplete="off" required></label>
-      <label>Token público<input name="key" type="password" placeholder="sb_publishable_… ou chave anon" autocomplete="off" required></label>
-      <p class="settings-note">Execute o <a href="./schema.sql" download>script de configuração</a> no SQL Editor do Supabase. A galeria e os arquivos desse projeto terão leitura pública.</p>
-      <div id="settings-error" class="form-message" role="status"></div>
-      <div class="dialog-actions">
-        <button class="button secondary" id="disconnect" type="button" hidden>Desconectar</button>
-        <button class="button primary" type="submit">Testar e conectar</button>
-      </div>
-    </form>
-  </dialog>
-
-  <dialog class="dialog slot-token-dialog" id="slot-token-dialog" aria-labelledby="slot-token-title">
-    <div class="dialog-header">
-      <h2 id="slot-token-title">Token de envio</h2>
-      <button class="icon-button" type="button" data-close aria-label="Fechar"><svg aria-hidden="true"><use href="#i-close"/></svg></button>
-    </div>
-    <form id="slot-token-form">
-      <label>Token configurado no servidor<input type="password" name="token" autocomplete="off" maxlength="512" required></label>
-      <div class="form-message" role="status"></div>
-      <div class="dialog-actions"><button class="button primary" type="submit">Salvar</button></div>
-    </form>
-  </dialog>
 
   <dialog class="dialog detail-dialog" id="detail-dialog" aria-label="Visualização da foto">
     <button class="icon-button detail-close" type="button" data-close aria-label="Fechar foto"><svg aria-hidden="true"><use href="#i-close"/></svg></button>

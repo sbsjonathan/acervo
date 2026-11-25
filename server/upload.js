@@ -4,7 +4,6 @@ import {
 } from '../public/supabase.js';
 
 const MAX_REQUEST_BYTES = MAX_IMAGE_BYTES + 32 * 1024;
-const encoder = new TextEncoder();
 
 function json(data, status) {
   return Response.json(data, { status, headers: { 'Cache-Control': 'no-store' } });
@@ -23,26 +22,6 @@ function slotMigrationRequired() {
     code: 'slot_schema_missing',
     error: `Execute o SQL atualizado no projeto Supabase para usar as ${SLOT_COUNT} posições.`,
   }, 503);
-}
-
-async function matchesToken(candidate, expected) {
-  if (!candidate) return false;
-
-  const [left, right] = await Promise.all([
-    crypto.subtle.digest('SHA-256', encoder.encode(candidate)),
-    crypto.subtle.digest('SHA-256', encoder.encode(expected)),
-  ]);
-  if (typeof crypto.subtle.timingSafeEqual === 'function') {
-    return crypto.subtle.timingSafeEqual(left, right);
-  }
-
-  const leftBytes = new Uint8Array(left);
-  const rightBytes = new Uint8Array(right);
-  let difference = 0;
-  for (let i = 0; i < leftBytes.length; i += 1) {
-    difference |= leftBytes[i] ^ rightBytes[i];
-  }
-  return difference === 0;
 }
 
 async function readUploadForm(request) {
@@ -123,13 +102,11 @@ function getSupabaseRequest(env) {
 async function saveImage({ url, request }, { file, ...metadata }) {
   const tablePath = `/rest/v1/${TABLE}`;
   const { slot } = metadata;
-  if (slot !== undefined) {
-    const check = await request(`${tablePath}?slot=eq.${slot}&select=id&limit=1`).catch(() => null);
-    const matches = await check?.json().catch(() => null);
-    if (isMissingSlotColumn(matches)) return slotMigrationRequired();
-    if (!check?.ok || !Array.isArray(matches)) return uploadFailure();
-    if (matches.length) return occupiedSlot(slot);
-  }
+  const check = await request(`${tablePath}?slot=eq.${slot}&select=id&limit=1`).catch(() => null);
+  const matches = await check?.json().catch(() => null);
+  if (isMissingSlotColumn(matches)) return slotMigrationRequired();
+  if (!check?.ok || !Array.isArray(matches)) return uploadFailure();
+  if (matches.length) return occupiedSlot(slot);
 
   const id = crypto.randomUUID();
   const storagePath = `token/${id}.${IMAGE_TYPES[file.type]}`;
@@ -165,8 +142,8 @@ async function saveImage({ url, request }, { file, ...metadata }) {
   if (inserted?.status >= 400 && inserted.status < 500 && Array.isArray(recovered) && !recovered.length) {
     await request(objectPath, { method: 'DELETE' }).catch(() => {});
   }
-  if (slot !== undefined && isMissingSlotColumn(result)) return slotMigrationRequired();
-  if (slot !== undefined && result?.code === '23505' &&
+  if (isMissingSlotColumn(result)) return slotMigrationRequired();
+  if (result?.code === '23505' &&
       /catalog_images_slot_key|Key \(slot\)/i.test(`${result.message} ${result.details}`)) {
     return occupiedSlot(slot);
   }
@@ -177,11 +154,6 @@ export async function handleImageUpload(request, env) {
   if (request.method !== 'POST') {
     return new Response(null, { status: 405, headers: { Allow: 'POST' } });
   }
-
-  const expected = String(env.ACERVO_UPLOAD_TOKEN ?? '').trim();
-  if (!expected) return json({ error: 'O token de envio ainda precisa ser configurado no servidor.' }, 503);
-  const candidate = request.headers.get('Authorization')?.match(/^Bearer\s+(\S+)$/i)?.[1];
-  if (!await matchesToken(candidate, expected)) return json({ error: 'Token de envio inválido.' }, 401);
 
   let supabase;
   try {
@@ -218,6 +190,7 @@ export async function handleImageUpload(request, env) {
       width,
       height,
     };
+    if (image.slot === undefined) return json({ error: `Escolha um álbum de 1 a ${SLOT_COUNT}.` }, 400);
     if (!await matchesImageType(image.file)) return json({ error: 'O conteúdo do arquivo não corresponde ao formato da imagem.' }, 400);
   } catch (error) {
     return json({ error: error.message }, 400);

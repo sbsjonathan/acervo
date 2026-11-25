@@ -1,3 +1,5 @@
-// Opcional. Para definir uma conexão padrão para todos os visitantes, preencha
-// apenas a URL do projeto e a chave publicável ou anon.
-// window.CATALOGO_SUPABASE = { url: 'https://seu-projeto.supabase.co', key: 'sb_publishable_...' };
+// A chave publicável identifica o projeto nas operações permitidas ao navegador.
+globalThis.CATALOGO_SUPABASE = {
+  "url": "https://isbkjxdaqjuvitrytesb.supabase.co",
+  "key": "sb_publishable_q95UFQ-EQoe8yOx2fJ1TAg_fQCZ_voS"
+};
