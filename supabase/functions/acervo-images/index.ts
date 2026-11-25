@@ -36,7 +36,7 @@ Deno.serve(async (request) => {
   }
 
   headers.set('Access-Control-Allow-Origin', allowedOrigin);
-  headers.set('Access-Control-Allow-Methods', 'POST, PATCH, OPTIONS');
+  headers.set('Access-Control-Allow-Methods', 'POST, PATCH, PUT, OPTIONS');
   headers.set('Access-Control-Allow-Headers', 'apikey, content-type');
 
   if (request.method === 'OPTIONS') {

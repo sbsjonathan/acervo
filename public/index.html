@@ -52,6 +52,9 @@
               <option value="Outro">Outro</option>
             </select>
           </label>
+          <div class="cover-edit-action">
+            <button class="button secondary replace-photo-button" id="replace-cover" type="button" hidden>Trocar foto</button>
+          </div>
         </div>
         <p class="visually-hidden" id="flow-announcement" role="status" aria-atomic="true"></p>
         <div class="flow-controls">
@@ -75,6 +78,7 @@
     </div>
     <p class="visually-hidden" id="slot-announcement" role="status" aria-atomic="true"></p>
     <input id="slot-file" type="file" accept="image/*" hidden>
+    <input id="replacement-file" type="file" accept="image/*" hidden>
   </main>
 
   <dialog class="dialog variations-dialog" id="variations-dialog" aria-labelledby="variations-title" aria-describedby="variations-context">
@@ -120,6 +124,7 @@
     </div>
     <div class="variant-strip">
       <div class="variant-thumbnails" id="variant-thumbnails" role="group" aria-label="Fotos e variações"></div>
+      <button class="button secondary replace-photo-button" id="replace-variant" type="button">Trocar foto</button>
       <button class="icon-button" id="add-variations" type="button" aria-label="Adicionar variações" title="Adicionar variações"><svg aria-hidden="true"><use href="#i-plus"/></svg></button>
     </div>
     <p class="variant-status" id="variant-status" role="status" aria-atomic="true"></p>

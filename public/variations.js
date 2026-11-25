@@ -1,7 +1,9 @@
 import { createCaptionControls } from './captions.js';
 import { bindVerticalSwipes } from './flow-motion.js';
 
-export function createVariations({ getImages, uploadVariation, editImage, isSaving, editCustomAuthor, openPhoto, report }) {
+export function createVariations({
+  getImages, uploadVariation, editImage, isSaving, editCustomAuthor, chooseReplacement, isReplacing, openPhoto, report,
+}) {
   const byId = id => document.getElementById(id);
   const dialog = byId('variations-dialog');
   const toggle = byId('variations-toggle');
@@ -13,6 +15,8 @@ export function createVariations({ getImages, uploadVariation, editImage, isSavi
   const position = byId('variant-position');
   const strip = byId('variant-thumbnails');
   const add = byId('add-variations');
+  const replace = byId('replace-variant');
+  const replaceLabel = replace.querySelector('span') ?? replace;
   const picker = byId('variant-files');
   const status = byId('variant-status');
 
@@ -50,6 +54,12 @@ export function createVariations({ getImages, uploadVariation, editImage, isSavi
     if (dialog.open && parent?.id === root.id) renderNotice(root);
   }
 
+  function notifyImage(image, message, error = false) {
+    if (!dialog.open || parent?.id !== (image.parentId ?? image.id)) return false;
+    notify(parent, message, error);
+    return true;
+  }
+
   async function save(root, image, field, value) {
     if (!root || !image || isSaving(image, field)) return;
     if (!uploading.has(root.id)) notify(root, '');
@@ -67,7 +77,6 @@ export function createVariations({ getImages, uploadVariation, editImage, isSavi
     button.className = 'variant-thumb';
     button.dataset.imageId = image.id;
     const photo = document.createElement('img');
-    photo.src = image.src;
     photo.alt = '';
     photo.loading = 'lazy';
     photo.decoding = 'async';
@@ -99,6 +108,8 @@ export function createVariations({ getImages, uploadVariation, editImage, isSavi
         thumbnails.set(image.id, button);
       }
       if (strip.children[index] !== button) strip.insertBefore(button, strip.children[index] ?? null);
+      const photo = button.firstElementChild;
+      if (photo.getAttribute('src') !== image.src) photo.src = image.src;
       const name = index ? `Variação ${index}` : 'Capa original';
       button.setAttribute('aria-label', image.favorite ? `${name}, nos favoritos` : name);
       button.lastElementChild.hidden = !image.favorite;
@@ -135,6 +146,10 @@ export function createVariations({ getImages, uploadVariation, editImage, isSavi
       categoryDisabled: isSaving(selected, 'category'),
     });
     add.disabled = uploading.has(parent.id);
+    const replacing = isReplacing(selected);
+    replace.setAttribute('aria-disabled', String(replacing));
+    const action = replacing ? 'Trocando…' : 'Trocar foto';
+    if (replaceLabel.textContent !== action) replaceLabel.textContent = action;
     renderNotice(parent);
     renderThumbnails(images);
     if (selected.id !== previousId) {
@@ -212,6 +227,9 @@ export function createVariations({ getImages, uploadVariation, editImage, isSavi
   favorite.addEventListener('click', () => {
     if (selected) void save(parent, selected, 'favorite', !selected.favorite);
   });
+  replace.addEventListener('click', () => {
+    if (selected && !isReplacing(selected)) chooseReplacement(selected);
+  });
   strip.addEventListener('click', event => {
     const thumb = event.target.closest('.variant-thumb');
     if (!thumb || !parent) return;
@@ -252,5 +270,5 @@ export function createVariations({ getImages, uploadVariation, editImage, isSavi
     move(step);
   });
 
-  return { open, refresh };
+  return { open, refresh, notifyImage };
 }

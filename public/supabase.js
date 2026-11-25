@@ -16,6 +16,8 @@ export const IMAGE_TYPES = {
 };
 export const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 export const IMAGE_ACCEPT = Object.keys(IMAGE_TYPES).join(',');
+const IMAGE_SUFFIXES = Object.values(IMAGE_TYPES).join('|');
+const UUID_PATTERN = '[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}';
 
 export function jwtRole(key) {
   const parts = key.split('.');
@@ -75,6 +77,7 @@ export function toImage(row, url) {
   return {
     id: row.id,
     src: `${url}/storage/v1/object/public/${BUCKET}/${path}`,
+    storagePath: row.storage_path,
     title: row.title,
     author: row.author ?? null,
     category: row.category ?? null,
@@ -139,7 +142,7 @@ export function normalizeSlot(slot) {
 }
 
 function normalizeUuid(value) {
-  if (typeof value !== 'string' || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value)) {
+  if (typeof value !== 'string' || !new RegExp(`^${UUID_PATTERN}$`, 'i').test(value)) {
     throw new Error('O identificador da foto é inválido.');
   }
   return value.toLowerCase();
@@ -151,7 +154,7 @@ export function normalizeImageTarget({ id, slot }) {
   return { id: normalizeUuid(id) };
 }
 
-export function normalizeImage({ file, title, author, category, description, tags, slot, parentId, clientUploadId }) {
+function validateImageFile(file) {
   if (!(file instanceof File) || !Object.hasOwn(IMAGE_TYPES, file.type) || !file.size) {
     throw new Error('Escolha uma imagem JPEG, PNG, WebP, GIF ou AVIF.');
   }
@@ -161,6 +164,20 @@ export function normalizeImage({ file, title, author, category, description, tag
   if (!file.name || file.name.length > 255) {
     throw new Error('Use um arquivo com nome de até 255 caracteres.');
   }
+}
+
+export function normalizeReplacement({ id, expectedStoragePath, clientUploadId, file }) {
+  validateImageFile(file);
+  const imageId = normalizeUuid(id);
+  const pathPattern = new RegExp(`^token/${imageId}(?:/${UUID_PATTERN}-[0-9a-f]{64})?\\.(?:${IMAGE_SUFFIXES})$`);
+  if (typeof expectedStoragePath !== 'string' || !pathPattern.test(expectedStoragePath)) {
+    throw new Error('O arquivo atual da foto é inválido. Atualize o catálogo e tente novamente.');
+  }
+  return { id: imageId, expectedStoragePath, clientUploadId: normalizeUuid(clientUploadId), file };
+}
+
+export function normalizeImage({ file, title, author, category, description, tags, slot, parentId, clientUploadId }) {
+  validateImageFile(file);
 
   const name = String(title ?? '').trim();
   const note = String(description ?? '').trim();
@@ -240,7 +257,7 @@ export function createCatalogConnection(config) {
     }
   }
 
-  async function saveImage(method, body, headers = {}) {
+  async function saveImage(method, body, headers = {}, imageId) {
     let response;
     try {
       response = await fetch(`${url}/functions/v1/acervo-images`, {
@@ -258,6 +275,9 @@ export function createCatalogConnection(config) {
       const error = new Error(image?.error || 'O serviço do catálogo não está disponível.');
       error.status = response.status;
       error.code = image?.code;
+      if (response.status === 409 && error.code === 'replacement_conflict' && image?.currentImage?.id === imageId && imageId) {
+        error.currentImage = image.currentImage;
+      }
       throw error;
     }
     return image;
@@ -289,5 +309,18 @@ export function createCatalogConnection(config) {
     return saveImage('PATCH', JSON.stringify(metadata), { 'Content-Type': 'application/json' });
   }
 
-  return { listImages, uploadImage, updateImageMetadata, importFavorite };
+  async function replaceImage({ image, file, clientUploadId = crypto.randomUUID() }) {
+    const { file: validatedFile, ...replacement } = normalizeReplacement({
+      id: image?.id, expectedStoragePath: image?.storagePath, clientUploadId, file,
+    });
+    const dimensions = await imageDimensions(validatedFile);
+    const form = new FormData();
+    for (const [name, value] of Object.entries({ ...replacement, ...dimensions, supabaseUrl: url })) {
+      form.set(name, value);
+    }
+    form.set('file', validatedFile, validatedFile.name);
+    return saveImage('PUT', form, {}, replacement.id);
+  }
+
+  return { listImages, uploadImage, updateImageMetadata, importFavorite, replaceImage };
 }

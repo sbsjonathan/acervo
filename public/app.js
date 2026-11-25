@@ -15,6 +15,11 @@ const element = (tag, className, content) => {
 };
 const detail = byId('detail-dialog');
 const slotFile = byId('slot-file');
+const replacementFile = byId('replacement-file');
+const replaceCover = byId('replace-cover');
+const replacing = new Set();
+const replacementAttempts = new WeakMap();
+let replacementTarget = null;
 const slotAnnouncement = byId('slot-announcement');
 const busySlots = new Set();
 const gallery = byId('gallery');
@@ -58,6 +63,8 @@ const captions = createCaptionControls({
 const variations = createVariations({
   getImages: imagesForCover,
   uploadVariation,
+  chooseReplacement,
+  isReplacing,
   editImage,
   isSaving,
   editCustomAuthor,
@@ -111,13 +118,17 @@ function albumNumber(album) {
   return String(album).padStart(2, '0');
 }
 
-function updateFavoriteButton() {
+function updateImageActions() {
   const image = state.albums.get(activeIndex + 1);
   const favorite = Boolean(image?.favorite);
   favoriteButton.disabled = !image || isSaving(image, 'favorite');
   favoriteButton.setAttribute('aria-pressed', String(favorite));
   favoriteButton.setAttribute('aria-label', favorite ? 'Remover dos favoritos' : 'Adicionar aos favoritos');
   variationsToggle.disabled = !image;
+  replaceCover.hidden = !image;
+  replaceCover.disabled = isReplacing(image);
+  const label = replaceCover.disabled ? 'Trocando…' : 'Trocar foto';
+  if (replaceCover.textContent !== label) replaceCover.textContent = label;
 }
 
 function openVariations() {
@@ -201,7 +212,7 @@ function updateCaption() {
   const album = activeIndex + 1;
   flowCounter.textContent = `${albumNumber(album)} / ${SLOT_COUNT}`;
   renderMetadata(album);
-  updateFavoriteButton();
+  updateImageActions();
 }
 
 function renderCollection() {
@@ -325,10 +336,10 @@ function updateCover(cover, active) {
   cover.setAttribute('aria-label', `${label} álbum ${albumNumber(album)}`);
   if (active && busy) cover.setAttribute('aria-busy', 'true');
   else cover.removeAttribute('aria-busy');
-  if (cover.dataset.state === type && cover.dataset.image === (image?.id ?? '')) return;
+  if (cover.dataset.state === type && cover.dataset.src === (image?.src ?? '')) return;
 
   cover.dataset.state = type;
-  cover.dataset.image = image?.id ?? '';
+  cover.dataset.src = image?.src ?? '';
   let content;
   if (image && !busy) {
     content = element('img', 'flow-image');
@@ -348,6 +359,7 @@ function updateCover(cover, active) {
 
 function openDetail(image) {
   const photo = byId('detail-image');
+  photo.dataset.imageId = image.id;
   photo.alt = image.parentId ? (image.title || 'Variação da capa') : `Foto do álbum ${albumNumber(image.slot)}`;
   photo.src = image.src;
   detail.showModal();
@@ -384,6 +396,65 @@ async function refreshTakenSlot(slot, source) {
   } catch (error) {
     console.warn('O álbum ocupado será atualizado quando a galeria for recarregada.', error);
   }
+}
+
+function isReplacing(image) {
+  return Boolean(image && replacing.has(image.id));
+}
+
+function chooseReplacement(image) {
+  if (!image || !state.source || isReplacing(image)) return;
+  replacementTarget = image;
+  // A modal makes controls outside it inert. Open the picker from the active surface.
+  const sheet = byId('variations-dialog');
+  (sheet.open ? sheet : slotFile.parentElement).append(replacementFile);
+  replacementFile.value = '';
+  replacementFile.click();
+}
+
+function applyReplacement(image, saved) {
+  // Caption and favorite edits can finish while a new file is uploading.
+  for (const field of ['storagePath', 'src', 'width', 'height', 'fileName', 'fileSize']) {
+    image[field] = saved[field];
+  }
+  if (image.slot) renderAlbum(image.slot);
+  const detailPhoto = byId('detail-image');
+  if (detail.open && detailPhoto.dataset.imageId === image.id) detailPhoto.src = image.src;
+}
+
+async function replacePhoto(image, file) {
+  const source = state.source;
+  if (!source || isReplacing(image)) return;
+  replacing.add(image.id);
+  refreshImage(image);
+  const root = image.parentId ? state.images.get(image.parentId) : image;
+  const label = image.parentId ? 'Variação' : 'Capa';
+  let message;
+  let failed = false;
+  try {
+    const photo = await prepareSlotPhoto(file);
+    const key = JSON.stringify([image.storagePath, file.name, file.size, file.lastModified]);
+    let attempt = replacementAttempts.get(image);
+    if (!attempt || attempt.key !== key) {
+      attempt = { key, id: crypto.randomUUID() };
+      replacementAttempts.set(image, attempt);
+    }
+    const saved = await source.replaceImage({ image, file: photo, clientUploadId: attempt.id });
+    applyReplacement(image, saved);
+    replacementAttempts.delete(image);
+    message = `${label} do álbum ${albumNumber(root.slot)} trocada.`;
+  } catch (error) {
+    if (error.currentImage?.id === image.id) {
+      applyReplacement(image, error.currentImage);
+      replacementAttempts.delete(image);
+    }
+    message = error.message;
+    failed = true;
+  } finally {
+    replacing.delete(image.id);
+    refreshImage(image);
+  }
+  if (!variations.notifyImage(image, message, failed)) reportSlot(message);
 }
 
 async function prepareSlotUpload(slot, file) {
@@ -519,6 +590,18 @@ slotFile.addEventListener('change', () => {
   slotFile.value = '';
   if (slot && file) void prepareSlotUpload(slot, file);
 });
+replaceCover.addEventListener('click', () => {
+  motion.jumpTo(Math.round(motion.getPosition()));
+  chooseReplacement(state.albums.get(activeIndex + 1));
+});
+replacementFile.addEventListener('change', () => {
+  const image = replacementTarget;
+  const file = replacementFile.files?.[0];
+  replacementTarget = null;
+  replacementFile.value = '';
+  if (image && file) void replacePhoto(image, file);
+});
+replacementFile.addEventListener('cancel', () => { replacementTarget = null; });
 byId('empty-action').addEventListener('click', connectCatalog);
 previousButton.addEventListener('click', () => motion.moveBy(-1));
 nextButton.addEventListener('click', () => motion.moveBy(1));

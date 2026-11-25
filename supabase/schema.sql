@@ -29,6 +29,8 @@ alter table public.catalog_images
 alter table public.catalog_images
   add constraint catalog_images_storage_path_check check (
     storage_path ~ ('^' || coalesce(owner_id::text, 'token') || '/' || id::text || '[.](jpg|png|webp|gif|avif)$')
+    or (owner_id is null and storage_path ~ ('^token/' || id::text
+      || '/[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}-[0-9a-f]{64}[.](jpg|png|webp|gif|avif)$'))
   ),
   add constraint catalog_images_author_check check (char_length(btrim(author)) between 1 and 80),
   add constraint catalog_images_slot_check check (slot between 1 and 30),
@@ -149,6 +151,46 @@ create policy catalog_files_cleanup
       select 1 from public.catalog_images as picture where picture.storage_path = name
     )
   );
+
+create or replace function public.replace_catalog_image(
+  p_image_id uuid,
+  p_expected_path text,
+  p_new_path text,
+  p_width integer,
+  p_height integer,
+  p_file_name text,
+  p_file_size integer
+)
+returns setof public.catalog_images
+language sql
+security definer
+set search_path = ''
+as $$
+  update public.catalog_images as image
+  set storage_path = p_new_path,
+      width = p_width,
+      height = p_height,
+      file_name = p_file_name,
+      file_size = p_file_size
+  where image.id = p_image_id
+    and image.storage_path = p_expected_path
+    and image.owner_id is null
+    and (image.slot is not null or image.parent_id is not null)
+    and p_new_path <> p_expected_path
+    and p_new_path ~ ('^token/' || p_image_id::text
+      || '/[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}-[0-9a-f]{64}[.](jpg|png|webp|gif|avif)$')
+    and exists (
+      select 1 from storage.objects as object
+      where object.bucket_id = 'catalog-images' and object.name = p_new_path
+      for key share
+    )
+  returning image.*;
+$$;
+
+revoke all on function public.replace_catalog_image(uuid, text, text, integer, integer, text, integer)
+  from public, anon, authenticated;
+grant execute on function public.replace_catalog_image(uuid, text, text, integer, integer, text, integer)
+  to service_role;
 
 notify pgrst, 'reload schema';
 

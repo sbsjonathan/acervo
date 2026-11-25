@@ -1,11 +1,13 @@
 import {
   BUCKET, TABLE, SLOT_COUNT, IMAGE_TYPES, MAX_IMAGE_BYTES,
-  isMissingCatalogColumn, jwtRole, supabaseOrigin, normalizeImage, normalizeImageTarget, normalizeMetadataPatch, toImage,
+  isMissingCatalogColumn, jwtRole, supabaseOrigin, normalizeImage, normalizeImageTarget,
+  normalizeMetadataPatch, normalizeReplacement, toImage,
 } from '../public/supabase.js';
 
 const MAX_REQUEST_BYTES = MAX_IMAGE_BYTES + 32 * 1024;
 const MAX_METADATA_BYTES = 4096;
 const TABLE_PATH = `/rest/v1/${TABLE}`;
+const REPLACE_PATH = '/rest/v1/rpc/replace_catalog_image';
 
 function json(data, status) {
   return Response.json(data, { status, headers: { 'Cache-Control': 'no-store' } });
@@ -81,6 +83,15 @@ async function readUploadForm(request) {
   } catch {
     throw new Error('Não foi possível abrir o formulário de envio.');
   }
+}
+
+function readDimensions(form) {
+  const width = Number(form.get('width'));
+  const height = Number(form.get('height'));
+  if (![width, height].every(value => Number.isInteger(value) && value > 0 && value <= 2147483647)) {
+    throw new Error('Não foi possível ler as dimensões da imagem.');
+  }
+  return { width, height };
 }
 
 async function matchesImageType(file) {
@@ -204,6 +215,116 @@ async function saveImage(supabase, { file, ...metadata }) {
   return await previousUpload(supabase, metadata) ?? uploadFailure();
 }
 
+function replacementConflict(row, url) {
+  return json({
+    code: 'replacement_conflict',
+    error: 'A foto foi alterada em outro envio. Confira a versão atual e tente novamente.',
+    currentImage: toImage(row, url),
+  }, 409);
+}
+
+function replacementFailure() {
+  return json({ error: 'Não foi possível substituir a foto no Supabase. Tente novamente.' }, 502);
+}
+
+function missingImage() {
+  return json({ error: 'A foto não foi encontrada.' }, 404);
+}
+
+function canReplaceImage(row) {
+  return row.owner_id == null && (row.slot != null || row.parent_id != null);
+}
+
+async function hashReplacement(data) {
+  const bytes = new Uint8Array(await crypto.subtle.digest('SHA-256', data));
+  return Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
+async function replaceImage(request, supabase) {
+  let replacement;
+  let dimensions;
+  try {
+    const form = await readUploadForm(request);
+    if (supabaseOrigin(form.get('supabaseUrl')) !== supabase.url) {
+      return json({ error: 'Para substituir, conecte o catálogo ao projeto Supabase configurado no servidor.' }, 409);
+    }
+    replacement = normalizeReplacement({
+      id: form.get('id'), expectedStoragePath: form.get('expectedStoragePath'),
+      clientUploadId: form.get('clientUploadId'), file: form.get('file'),
+    });
+    dimensions = readDimensions(form);
+    if (!await matchesImageType(replacement.file)) {
+      return json({ error: 'O conteúdo do arquivo não corresponde ao formato da imagem.' }, 400);
+    }
+  } catch (error) {
+    return json({ error: error.message }, 400);
+  }
+
+  const { file, id, expectedStoragePath, clientUploadId } = replacement;
+  const rows = await readCatalog(supabase.request, `id=eq.${id}`);
+  if (!Array.isArray(rows)) return replacementFailure();
+  if (!rows.length) return missingImage();
+  const current = rows[0];
+  if (!canReplaceImage(current)) return json({ error: 'Esta foto não pode ser substituída neste catálogo.' }, 403);
+
+  const fileHash = await hashReplacement(await file.arrayBuffer());
+  // The prior path makes retries stable without letting a later replacement reuse an earlier path.
+  const version = await hashReplacement(new TextEncoder().encode(`${expectedStoragePath}\n${fileHash}`));
+  const newPath = `token/${id}/${clientUploadId}-${version}.${IMAGE_TYPES[file.type]}`;
+  const objectPath = `/storage/v1/object/${BUCKET}/`;
+  const remove = path => supabase.request(`${objectPath}${path}`, { method: 'DELETE' }).catch(() => null);
+  const confirm = async row => {
+    await remove(expectedStoragePath);
+    return json(toImage(row, supabase.url), 200);
+  };
+
+  if (current.storage_path === newPath) return confirm(current);
+  if (current.storage_path !== expectedStoragePath) {
+    await remove(newPath);
+    return replacementConflict(current, supabase.url);
+  }
+
+  const uploaded = await supabase.request(`${objectPath}${newPath}`, {
+    method: 'POST',
+    headers: { 'Content-Type': file.type, 'Cache-Control': 'max-age=3600' },
+    body: file,
+  }).catch(() => null);
+  if (!uploaded?.ok) {
+    const error = await uploaded?.json().catch(() => null);
+    const exists = uploaded?.status === 409 || String(error?.statusCode) === '409' || error?.error === 'Duplicate';
+    if (!exists) return replacementFailure();
+  }
+
+  const saved = await supabase.request(REPLACE_PATH, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      p_image_id: id,
+      p_expected_path: expectedStoragePath,
+      p_new_path: newPath,
+      p_width: dimensions.width,
+      p_height: dimensions.height,
+      p_file_name: file.name,
+      p_file_size: file.size,
+    }),
+  }).catch(() => null);
+  const out = await saved?.json().catch(() => null);
+  if (saved?.ok && out?.[0]?.storage_path === newPath) return confirm(out[0]);
+
+  const latest = await readCatalog(supabase.request, `id=eq.${id}`);
+  if (!Array.isArray(latest)) return replacementFailure();
+  if (latest[0]?.storage_path === newPath) return confirm(latest[0]);
+  if (!latest.length || latest[0].storage_path !== expectedStoragePath) {
+    await remove(newPath);
+    return latest.length ? replacementConflict(latest[0], supabase.url) : missingImage();
+  }
+  // The outcome is uncertain while the old path is current. A retry can reuse the immutable upload.
+  if (out?.code === 'PGRST202') {
+    return json({ code: 'replacement_schema_missing', error: 'Execute o SQL atualizado para substituir fotos.' }, 503);
+  }
+  return replacementFailure();
+}
+
 async function updateMetadata(request, supabase) {
   const contentType = request.headers.get('Content-Type') || '';
   if (!request.body || !/^application\/json(?:\s*;|$)/i.test(contentType)) {
@@ -262,8 +383,8 @@ async function updateMetadata(request, supabase) {
 }
 
 export async function handleImageRequest(request, env) {
-  if (request.method !== 'POST' && request.method !== 'PATCH') {
-    return new Response(null, { status: 405, headers: { Allow: 'POST, PATCH' } });
+  if (!['POST', 'PATCH', 'PUT'].includes(request.method)) {
+    return new Response(null, { status: 405, headers: { Allow: 'POST, PATCH, PUT' } });
   }
 
   let supabase;
@@ -277,6 +398,7 @@ export async function handleImageRequest(request, env) {
   if (Number(request.headers.get('Content-Length')) > MAX_REQUEST_BYTES) {
     return json({ error: 'A imagem precisa ter no máximo 10 MB.' }, 413);
   }
+  if (request.method === 'PUT') return replaceImage(request, supabase);
 
   let image;
   try {
@@ -285,11 +407,7 @@ export async function handleImageRequest(request, env) {
       return json({ error: 'Para enviar, conecte o catálogo ao projeto Supabase configurado no servidor.' }, 409);
     }
 
-    const width = Number(form.get('width'));
-    const height = Number(form.get('height'));
-    if (![width, height].every(value => Number.isInteger(value) && value > 0 && value <= 2147483647)) {
-      return json({ error: 'Não foi possível ler as dimensões da imagem.' }, 400);
-    }
+    const dimensions = readDimensions(form);
     const category = form.get('category');
     const legacyUpload = !form.has('author') && category === 'Fotos do aparelho';
     image = {
@@ -304,8 +422,7 @@ export async function handleImageRequest(request, env) {
         parentId: form.get('parent_id') ?? form.get('parentId'),
         clientUploadId: form.get('client_upload_id') ?? form.get('clientUploadId'),
       }),
-      width,
-      height,
+      ...dimensions,
     };
     if (!await matchesImageType(image.file)) return json({ error: 'O conteúdo do arquivo não corresponde ao formato da imagem.' }, 400);
   } catch (error) {
