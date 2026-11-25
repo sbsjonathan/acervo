@@ -29,10 +29,39 @@
         <div class="flow-viewport" id="flow-viewport" tabindex="0" aria-label="Capas da coleção. Use as setas do teclado para navegar.">
           <div class="flow-track" id="gallery"></div>
         </div>
-        <div class="flow-caption">
-          <p class="flow-category" id="flow-category"></p>
-          <h2 id="flow-title"></h2>
-        </div>
+        <form class="metadata-form" id="metadata-form" aria-label="Detalhes da foto">
+          <div class="metadata-fields">
+            <div class="metadata-author">
+              <label class="metadata-field" for="author-select">
+                <span>Autor</span>
+                <select id="author-select" name="author">
+                  <option value="">Selecionar</option>
+                  <option value="Yasmim">Yasmim</option>
+                  <option value="Áquila">Áquila</option>
+                  <option value="Jonathan">Jonathan</option>
+                  <option value="other">Outro</option>
+                </select>
+              </label>
+              <label class="metadata-field" id="author-custom-field" for="author-custom" hidden>
+                <span>Nome do autor</span>
+                <input id="author-custom" name="authorCustom" type="text" autocomplete="off" maxlength="80">
+              </label>
+            </div>
+            <label class="metadata-field" for="category-select">
+              <span>Categoria</span>
+              <select id="category-select" name="category">
+                <option value="Logo">Logo</option>
+                <option value="Frases">Frases</option>
+                <option value="Desenho">Desenho</option>
+                <option value="Outro" selected>Outro</option>
+              </select>
+            </label>
+          </div>
+          <div class="metadata-actions">
+            <p class="metadata-status" id="metadata-status" role="status" aria-atomic="true"></p>
+            <button class="button primary" id="save-metadata" type="submit" hidden>Salvar</button>
+          </div>
+        </form>
         <p class="visually-hidden" id="flow-announcement" role="status" aria-atomic="true"></p>
         <div class="flow-controls">
           <div class="flow-counter" id="results"></div>
@@ -40,7 +69,7 @@
             <button class="icon-button flow-nav-button" id="previous-image" type="button" aria-label="Álbum anterior"><svg aria-hidden="true"><use href="#i-back"/></svg></button>
             <button class="icon-button flow-nav-button" id="next-image" type="button" aria-label="Próximo álbum"><svg aria-hidden="true"><use href="#i-next"/></svg></button>
           </div>
-          <button class="icon-button flow-favorite" id="flow-favorite" type="button"><svg aria-hidden="true"><use href="#i-heart"/></svg></button>
+          <button class="icon-button flow-favorite" id="flow-favorite" type="button" aria-label="Favoritar foto"><svg aria-hidden="true"><use href="#i-heart"/></svg></button>
         </div>
       </div>
       <div class="empty-state" id="empty" hidden>

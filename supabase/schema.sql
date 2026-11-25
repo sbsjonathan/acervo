@@ -16,10 +16,12 @@ create table if not exists public.catalog_images (
 );
 
 alter table public.catalog_images
+  add column if not exists author text,
   add column if not exists slot integer,
   alter column owner_id drop not null,
   drop constraint if exists catalog_images_check,
   drop constraint if exists catalog_images_storage_path_check,
+  drop constraint if exists catalog_images_author_check,
   drop constraint if exists catalog_images_slot_check,
   drop constraint if exists catalog_images_slot_key;
 
@@ -27,6 +29,7 @@ alter table public.catalog_images
   add constraint catalog_images_storage_path_check check (
     storage_path ~ ('^' || coalesce(owner_id::text, 'token') || '/' || id::text || '[.](jpg|png|webp|gif|avif)$')
   ),
+  add constraint catalog_images_author_check check (char_length(btrim(author)) between 1 and 80),
   add constraint catalog_images_slot_check check (slot between 1 and 30),
   add constraint catalog_images_slot_key unique (slot);
 
@@ -37,7 +40,9 @@ alter table public.catalog_images enable row level security;
 revoke all on table public.catalog_images from public, anon, authenticated;
 grant select on table public.catalog_images to anon, authenticated;
 grant insert on table public.catalog_images to authenticated;
+revoke update on table public.catalog_images from service_role;
 grant select, insert on table public.catalog_images to service_role;
+grant update (author, category) on table public.catalog_images to service_role;
 
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
 values (

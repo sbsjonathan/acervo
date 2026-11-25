@@ -1,4 +1,4 @@
-import { handleImageUpload } from '../../../server/upload.js';
+import { handleImageRequest } from '../../../server/upload.js';
 
 function pagesOrigin(): string | null {
   try {
@@ -36,14 +36,14 @@ Deno.serve(async (request) => {
   }
 
   headers.set('Access-Control-Allow-Origin', allowedOrigin);
-  headers.set('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  headers.set('Access-Control-Allow-Methods', 'POST, PATCH, OPTIONS');
   headers.set('Access-Control-Allow-Headers', 'apikey, content-type');
 
   if (request.method === 'OPTIONS') {
     return new Response(null, { status: 204, headers });
   }
 
-  const response = await handleImageUpload(request, {
+  const response = await handleImageRequest(request, {
     SUPABASE_URL: Deno.env.get('SUPABASE_URL'),
     SUPABASE_SECRET_KEY: supabaseSecretKey(),
   });

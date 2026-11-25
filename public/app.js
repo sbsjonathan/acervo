@@ -1,6 +1,8 @@
 import { createFlowMotion } from './flow-motion.js';
 import { prepareSlotPhoto } from './slot-photo.js';
-import { createCatalogConnection, getCatalogConfig, SLOT_COUNT } from './supabase.js';
+import {
+  AUTHOR_MAX_LENGTH, AUTHOR_OPTIONS, createCatalogConnection, getCatalogConfig, IMAGE_CATEGORIES, SLOT_COUNT,
+} from './supabase.js';
 
 const byId = id => document.getElementById(id);
 const element = (tag, className, content) => {
@@ -18,8 +20,16 @@ const viewport = byId('flow-viewport');
 const previousButton = byId('previous-image');
 const nextButton = byId('next-image');
 const favoriteButton = byId('flow-favorite');
-const flowTitle = byId('flow-title');
-const flowCategory = byId('flow-category');
+const metadataForm = byId('metadata-form');
+const authorSelect = byId('author-select');
+const authorCustom = byId('author-custom');
+const authorCustomField = byId('author-custom-field');
+const categorySelect = byId('category-select');
+const saveMetadataButton = byId('save-metadata');
+const metadataStatus = byId('metadata-status');
+const metadataDrafts = new Map();
+const savingMetadata = new Set();
+const metadataFeedback = new Map();
 const flowCounter = byId('results');
 const announcement = byId('flow-announcement');
 const favoritesKey = 'acervo-favoritos-v1';
@@ -36,6 +46,7 @@ let activeSlot = null;
 let step = 128;
 let radius = 3;
 let pickerSlot = 0;
+authorCustom.maxLength = AUTHOR_MAX_LENGTH;
 const covers = new Map();
 const motion = createFlowMotion(viewport, {
   getStep: () => state.pending ? 0 : step,
@@ -85,12 +96,79 @@ function updateFavoriteButton() {
   favoriteButton.setAttribute('aria-label', favorite ? 'Remover dos favoritos' : 'Adicionar aos favoritos');
 }
 
+function metadataFromImage(image) {
+  return {
+    author: image?.author ?? '',
+    category: IMAGE_CATEGORIES.includes(image?.category) ? image.category : 'Outro',
+  };
+}
+
+function draftFromImage(image) {
+  const metadata = metadataFromImage(image);
+  const isPreset = AUTHOR_OPTIONS.includes(metadata.author) && metadata.author !== 'Outro';
+  const isCustom = Boolean(metadata.author) && !isPreset;
+  return {
+    authorChoice: isCustom ? 'other' : metadata.author,
+    customAuthor: isCustom ? metadata.author : '',
+    category: metadata.category,
+  };
+}
+
+function draftMetadata(draft) {
+  return {
+    author: draft.authorChoice === 'other' ? draft.customAuthor.trim() : draft.authorChoice,
+    category: draft.category,
+  };
+}
+
+function metadataChanged(image, metadata) {
+  const previous = metadataFromImage(image);
+  return metadata.author !== previous.author || metadata.category !== previous.category;
+}
+
+function renderMetadata(slot) {
+  if (activeIndex + 1 !== slot) return;
+  const image = state.albums.get(slot);
+  const draft = metadataDrafts.get(slot) ?? draftFromImage(image);
+  const metadata = draftMetadata(draft);
+  const hasChange = metadataChanged(image, metadata);
+  const custom = draft.authorChoice === 'other';
+  const saving = savingMetadata.has(slot);
+  const uploading = busySlots.has(slot);
+  const frozen = uploading || saving;
+  const feedback = metadataFeedback.get(slot);
+
+  if (authorSelect.value !== draft.authorChoice) authorSelect.value = draft.authorChoice;
+  if (authorCustom.value !== draft.customAuthor) authorCustom.value = draft.customAuthor;
+  if (categorySelect.value !== draft.category) categorySelect.value = draft.category;
+  authorCustomField.hidden = !custom;
+  authorCustom.required = custom;
+  authorSelect.disabled = frozen;
+  authorCustom.disabled = frozen || !custom;
+  categorySelect.disabled = frozen;
+  saveMetadataButton.hidden = !image || (!hasChange && !saving);
+  saveMetadataButton.disabled = frozen || !state.source;
+  saveMetadataButton.textContent = saving ? 'Salvando…' : 'Salvar';
+  metadataStatus.dataset.state = feedback?.state ?? '';
+  const message = uploading ? 'Enviando foto…' : feedback?.message ?? '';
+  if (metadataStatus.textContent !== message) metadataStatus.textContent = message;
+}
+
+function recordMetadataDraft() {
+  const slot = activeIndex + 1;
+  metadataFeedback.delete(slot);
+  metadataDrafts.set(slot, {
+    authorChoice: authorSelect.value,
+    customAuthor: authorCustom.value,
+    category: categorySelect.value,
+  });
+  renderMetadata(slot);
+}
+
 function updateCaption() {
   const album = activeIndex + 1;
-  const image = state.albums.get(album);
-  flowTitle.textContent = `Álbum ${albumNumber(album)}`;
-  flowCategory.textContent = busySlots.has(album) ? 'Enviando foto…' : image ? '' : 'Toque para adicionar';
   flowCounter.textContent = `${albumNumber(album)} / ${SLOT_COUNT}`;
+  renderMetadata(album);
   updateFavoriteButton();
 }
 
@@ -186,6 +264,13 @@ function createCover(album, slot) {
       reportSlot('O envio ficará disponível quando o Acervo estiver conectado ao Supabase.');
       return;
     }
+    const draft = metadataDrafts.get(album);
+    if (draft?.authorChoice === 'other' && !draft.customAuthor.trim()) {
+      metadataFeedback.set(album, { state: 'error', message: 'Digite o nome do autor.' });
+      renderMetadata(album);
+      authorCustom.focus();
+      return;
+    }
     pickerSlot = album;
     slotFile.value = '';
     slotFile.click();
@@ -264,7 +349,10 @@ async function refreshTakenSlot(slot, source) {
   try {
     const images = await source.listImages();
     const image = images.find(item => item.slot === slot);
-    if (image && state.source === source) state.albums.set(slot, image);
+    if (image && state.source === source) {
+      state.albums.set(slot, image);
+      metadataDrafts.delete(slot);
+    }
   } catch (error) {
     console.warn('O álbum ocupado será atualizado quando a galeria for recarregada.', error);
   }
@@ -273,6 +361,8 @@ async function refreshTakenSlot(slot, source) {
 async function prepareSlotUpload(slot, file) {
   const source = state.source;
   if (!source || busySlots.has(slot)) return;
+  const metadata = draftMetadata(metadataDrafts.get(slot) ?? draftFromImage());
+  metadataFeedback.delete(slot);
   busySlots.add(slot);
   renderAlbum(slot);
   slotAnnouncement.textContent = `Preparando foto ${slot}.`;
@@ -281,10 +371,13 @@ async function prepareSlotUpload(slot, file) {
     const image = await source.uploadImage({
       file: photo,
       title: `Foto ${albumNumber(slot)}`,
-      category: 'Fotos do aparelho',
+      ...metadata,
       slot,
     });
-    if (state.source === source) state.albums.set(slot, image);
+    if (state.source === source) {
+      state.albums.set(slot, image);
+      metadataDrafts.delete(slot);
+    }
     reportSlot(`Foto ${slot} salva no Supabase.`);
   } catch (error) {
     if (error.code === 'slot_occupied') await refreshTakenSlot(slot, source);
@@ -292,6 +385,40 @@ async function prepareSlotUpload(slot, file) {
   } finally {
     busySlots.delete(slot);
     renderAlbum(slot);
+  }
+}
+
+async function saveMetadata(event) {
+  event.preventDefault();
+  const slot = activeIndex + 1;
+  const source = state.source;
+  const draft = metadataDrafts.get(slot);
+  const imageBeforeSave = state.albums.get(slot);
+  if (!source || !draft || !imageBeforeSave || savingMetadata.has(slot)) return;
+  const metadata = draftMetadata(draft);
+  if (draft.authorChoice === 'other' && !metadata.author) {
+    metadataFeedback.set(slot, { state: 'error', message: 'Digite o nome do autor.' });
+    renderMetadata(slot);
+    authorCustom.focus();
+    return;
+  }
+
+  if (!metadataChanged(imageBeforeSave, metadata)) return;
+
+  metadataFeedback.delete(slot);
+  savingMetadata.add(slot);
+  renderMetadata(slot);
+  try {
+    const image = await source.updateImageMetadata({ slot, ...metadata });
+    if (state.source !== source) return;
+    state.albums.set(slot, image);
+    metadataDrafts.delete(slot);
+    metadataFeedback.set(slot, { state: 'success', message: 'Alterações salvas.' });
+  } catch (error) {
+    metadataFeedback.set(slot, { state: 'error', message: error.message });
+  } finally {
+    savingMetadata.delete(slot);
+    renderMetadata(slot);
   }
 }
 
@@ -337,6 +464,14 @@ detail.addEventListener('click', event => {
   const box = detail.getBoundingClientRect();
   if (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom) detail.close();
 });
+
+authorSelect.addEventListener('change', () => {
+  recordMetadataDraft();
+  if (authorSelect.value === 'other') authorCustom.focus();
+});
+authorCustom.addEventListener('input', recordMetadataDraft);
+categorySelect.addEventListener('change', recordMetadataDraft);
+metadataForm.addEventListener('submit', saveMetadata);
 
 slotFile.addEventListener('change', () => {
   const slot = pickerSlot;

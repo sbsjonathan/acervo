@@ -1,9 +1,11 @@
 import {
   BUCKET, TABLE, SLOT_COUNT, IMAGE_TYPES, MAX_IMAGE_BYTES,
-  isMissingSlotColumn, jwtRole, supabaseOrigin, normalizeImage, toImage,
+  isMissingCatalogColumn, jwtRole, supabaseOrigin, normalizeImage, normalizeImageMetadata, normalizeSlot, toImage,
 } from '../public/supabase.js';
 
 const MAX_REQUEST_BYTES = MAX_IMAGE_BYTES + 32 * 1024;
+const MAX_METADATA_BYTES = 4096;
+const TABLE_PATH = `/rest/v1/${TABLE}`;
 
 function json(data, status) {
   return Response.json(data, { status, headers: { 'Cache-Control': 'no-store' } });
@@ -24,13 +26,15 @@ function slotMigrationRequired() {
   }, 503);
 }
 
-async function readUploadForm(request) {
-  const contentType = request.headers.get('Content-Type') || '';
-  if (!request.body || !/^multipart\/form-data\s*;/i.test(contentType)) {
-    throw new Error('Envie os dados e a imagem em um formulário.');
-  }
+function metadataMigrationRequired() {
+  return json({
+    code: 'metadata_schema_missing',
+    error: 'Execute o SQL atualizado no projeto Supabase para salvar autor e categoria.',
+  }, 503);
+}
 
-  const reader = request.body.getReader();
+async function readRequestBody(body, limit, limitMessage) {
+  const reader = body.getReader();
   const chunks = [];
   let size = 0;
 
@@ -38,15 +42,25 @@ async function readUploadForm(request) {
     const { value, done } = await reader.read();
     if (done) break;
     size += value.byteLength;
-    if (size > MAX_REQUEST_BYTES) {
+    if (size > limit) {
       await reader.cancel();
-      throw new Error('A imagem precisa ter no máximo 10 MB.');
+      throw new Error(limitMessage);
     }
     chunks.push(value);
   }
+  return new Blob(chunks);
+}
+
+async function readUploadForm(request) {
+  const contentType = request.headers.get('Content-Type') || '';
+  if (!request.body || !/^multipart\/form-data\s*;/i.test(contentType)) {
+    throw new Error('Envie os dados e a imagem em um formulário.');
+  }
+
+  const body = await readRequestBody(request.body, MAX_REQUEST_BYTES, 'A imagem precisa ter no máximo 10 MB.');
 
   try {
-    return await new Response(new Blob(chunks), { headers: { 'Content-Type': contentType } }).formData();
+    return await new Response(body, { headers: { 'Content-Type': contentType } }).formData();
   } catch {
     throw new Error('Não foi possível abrir o formulário de envio.');
   }
@@ -100,11 +114,11 @@ function getSupabaseRequest(env) {
 }
 
 async function saveImage({ url, request }, { file, ...metadata }) {
-  const tablePath = `/rest/v1/${TABLE}`;
   const { slot } = metadata;
-  const check = await request(`${tablePath}?slot=eq.${slot}&select=id&limit=1`).catch(() => null);
+  const check = await request(`${TABLE_PATH}?slot=eq.${slot}&select=id,author&limit=1`).catch(() => null);
   const matches = await check?.json().catch(() => null);
-  if (isMissingSlotColumn(matches)) return slotMigrationRequired();
+  if (isMissingCatalogColumn(matches, 'slot')) return slotMigrationRequired();
+  if (isMissingCatalogColumn(matches, 'author')) return metadataMigrationRequired();
   if (!check?.ok || !Array.isArray(matches)) return uploadFailure();
   if (matches.length) return occupiedSlot(slot);
 
@@ -119,7 +133,7 @@ async function saveImage({ url, request }, { file, ...metadata }) {
   }).catch(() => null);
   if (!object?.ok) return uploadFailure();
 
-  const inserted = await request(tablePath, {
+  const inserted = await request(TABLE_PATH, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Prefer: 'return=representation' },
     body: JSON.stringify({
@@ -134,7 +148,7 @@ async function saveImage({ url, request }, { file, ...metadata }) {
   const result = await inserted?.json().catch(() => null);
   if (inserted?.ok && result?.[0]) return json(toImage(result[0], url), 201);
 
-  const lookup = await request(`${tablePath}?id=eq.${id}`).catch(() => null);
+  const lookup = await request(`${TABLE_PATH}?id=eq.${id}`).catch(() => null);
   const recovered = lookup?.ok ? await lookup.json().catch(() => null) : null;
   if (recovered?.[0]) return json(toImage(recovered[0], url), 201);
 
@@ -142,7 +156,8 @@ async function saveImage({ url, request }, { file, ...metadata }) {
   if (inserted?.status >= 400 && inserted.status < 500 && Array.isArray(recovered) && !recovered.length) {
     await request(objectPath, { method: 'DELETE' }).catch(() => {});
   }
-  if (isMissingSlotColumn(result)) return slotMigrationRequired();
+  if (isMissingCatalogColumn(result, 'slot')) return slotMigrationRequired();
+  if (isMissingCatalogColumn(result, 'author')) return metadataMigrationRequired();
   if (result?.code === '23505' &&
       /catalog_images_slot_key|Key \(slot\)/i.test(`${result.message} ${result.details}`)) {
     return occupiedSlot(slot);
@@ -150,17 +165,62 @@ async function saveImage({ url, request }, { file, ...metadata }) {
   return uploadFailure();
 }
 
-export async function handleImageUpload(request, env) {
-  if (request.method !== 'POST') {
-    return new Response(null, { status: 405, headers: { Allow: 'POST' } });
+async function updateMetadata(request, supabase) {
+  const contentType = request.headers.get('Content-Type') || '';
+  if (!request.body || !/^application\/json(?:\s*;|$)/i.test(contentType)) {
+    return json({ error: 'Envie autor e categoria em JSON.' }, 400);
+  }
+
+  const limitMessage = 'Os dados de autor e categoria são muito longos.';
+  if (Number(request.headers.get('Content-Length')) > MAX_METADATA_BYTES) {
+    return json({ error: limitMessage }, 413);
+  }
+
+  let data;
+  try {
+    const body = await readRequestBody(request.body, MAX_METADATA_BYTES, limitMessage);
+    data = JSON.parse(await body.text());
+  } catch (error) {
+    return json({ error: error instanceof SyntaxError ? 'Não foi possível ler os dados da edição.' : error.message }, 400);
+  }
+
+  let slot;
+  let metadata;
+  try {
+    if (supabaseOrigin(data?.supabaseUrl) !== supabase.url) {
+      return json({ error: 'Para editar, conecte o catálogo ao projeto Supabase configurado no servidor.' }, 409);
+    }
+    slot = normalizeSlot(data.slot);
+    metadata = normalizeImageMetadata(data);
+  } catch (error) {
+    return json({ error: error.message }, 400);
+  }
+
+  const response = await supabase.request(`${TABLE_PATH}?slot=eq.${slot}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', Prefer: 'return=representation' },
+    body: JSON.stringify(metadata),
+  }).catch(() => null);
+  const rows = await response?.json().catch(() => null);
+  if (isMissingCatalogColumn(rows, 'author')) return metadataMigrationRequired();
+  if (isMissingCatalogColumn(rows, 'slot')) return slotMigrationRequired();
+  if (!response?.ok || !Array.isArray(rows)) return json({ error: 'Não foi possível salvar a edição no Supabase.' }, 502);
+  if (!rows.length) return json({ error: `O álbum ${slot} ainda está vazio.` }, 404);
+  return json(toImage(rows[0], supabase.url), 200);
+}
+
+export async function handleImageRequest(request, env) {
+  if (request.method !== 'POST' && request.method !== 'PATCH') {
+    return new Response(null, { status: 405, headers: { Allow: 'POST, PATCH' } });
   }
 
   let supabase;
   try {
     supabase = getSupabaseRequest(env);
   } catch {
-    return json({ error: 'A conexão de envio com o Supabase ainda precisa ser configurada no servidor.' }, 503);
+    return json({ error: 'A conexão com o Supabase ainda precisa ser configurada no servidor.' }, 503);
   }
+  if (request.method === 'PATCH') return updateMetadata(request, supabase);
 
   if (Number(request.headers.get('Content-Length')) > MAX_REQUEST_BYTES) {
     return json({ error: 'A imagem precisa ter no máximo 10 MB.' }, 413);
@@ -178,11 +238,14 @@ export async function handleImageUpload(request, env) {
     if (![width, height].every(value => Number.isInteger(value) && value > 0 && value <= 2147483647)) {
       return json({ error: 'Não foi possível ler as dimensões da imagem.' }, 400);
     }
+    const category = form.get('category');
+    const legacyUpload = !form.has('author') && category === 'Fotos do aparelho';
     image = {
       ...normalizeImage({
         file: form.get('file'),
         title: form.get('title'),
-        category: form.get('category'),
+        author: form.get('author'),
+        category: legacyUpload ? 'Outro' : category,
         description: form.get('description'),
         tags: form.getAll('tags'),
         slot: form.get('slot'),
@@ -190,7 +253,6 @@ export async function handleImageUpload(request, env) {
       width,
       height,
     };
-    if (image.slot === undefined) return json({ error: `Escolha um álbum de 1 a ${SLOT_COUNT}.` }, 400);
     if (!await matchesImageType(image.file)) return json({ error: 'O conteúdo do arquivo não corresponde ao formato da imagem.' }, 400);
   } catch (error) {
     return json({ error: error.message }, 400);

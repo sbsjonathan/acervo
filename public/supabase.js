@@ -4,6 +4,9 @@ const IMAGE_COLUMNS = 'id,title,category,description,tags,storage_path,created_a
 export const BUCKET = 'catalog-images';
 export const TABLE = 'catalog_images';
 export const SLOT_COUNT = 30;
+export const AUTHOR_OPTIONS = Object.freeze(['Yasmim', 'Áquila', 'Jonathan', 'Outro']);
+export const AUTHOR_MAX_LENGTH = 80;
+export const IMAGE_CATEGORIES = Object.freeze(['Logo', 'Frases', 'Desenho', 'Outro']);
 export const IMAGE_TYPES = {
   'image/jpeg': 'jpg',
   'image/png': 'png',
@@ -62,8 +65,8 @@ export function getCatalogConfig() {
   }
 }
 
-export function isMissingSlotColumn(error) {
-  return ['42703', 'PGRST204'].includes(error?.code) && /\bslot\b/i.test(error.message || '');
+export function isMissingCatalogColumn(error, column) {
+  return ['42703', 'PGRST204'].includes(error?.code) && new RegExp(`\\b${column}\\b`, 'i').test(error.message || '');
 }
 
 export function toImage(row, url) {
@@ -73,6 +76,7 @@ export function toImage(row, url) {
     id: row.id,
     src: `${url}/storage/v1/object/public/${BUCKET}/${path}`,
     title: row.title,
+    author: row.author ?? null,
     category: row.category,
     description: row.description,
     tags: row.tags,
@@ -100,7 +104,26 @@ async function imageDimensions(file) {
   }
 }
 
-export function normalizeImage({ file, title, category, description, tags, slot }) {
+export function normalizeImageMetadata({ author, category }) {
+  const name = typeof author === 'string' ? author.trim() : '';
+  const group = typeof category === 'string' ? category.trim() : '';
+
+  if ((author != null && typeof author !== 'string') || name.includes('\0') || [...name].length > AUTHOR_MAX_LENGTH) {
+    throw new Error(`Use um nome de autor com até ${AUTHOR_MAX_LENGTH} caracteres.`);
+  }
+  if (!IMAGE_CATEGORIES.includes(group)) throw new Error('Escolha uma das categorias disponíveis.');
+  return { author: name || null, category: group };
+}
+
+export function normalizeSlot(slot) {
+  const position = typeof slot === 'string' && /^\d+$/.test(slot) ? Number(slot) : slot;
+  if (!Number.isInteger(position) || position < 1 || position > SLOT_COUNT) {
+    throw new Error(`Escolha um álbum de 1 a ${SLOT_COUNT}.`);
+  }
+  return position;
+}
+
+export function normalizeImage({ file, title, author, category, description, tags, slot }) {
   if (!(file instanceof File) || !Object.hasOwn(IMAGE_TYPES, file.type) || !file.size) {
     throw new Error('Escolha uma imagem JPEG, PNG, WebP, GIF ou AVIF.');
   }
@@ -112,26 +135,24 @@ export function normalizeImage({ file, title, category, description, tags, slot 
   }
 
   const name = String(title ?? '').trim();
-  const group = String(category ?? '').trim();
   const note = String(description ?? '').trim();
   const tagList = Array.isArray(tags) ? tags : String(tags ?? '').split(',');
   const keywords = [...new Set(tagList.map(tag => String(tag).trim()).filter(Boolean))];
 
   if (!name || name.length > 120) throw new Error('Informe um título com até 120 caracteres.');
-  if (!group || group.length > 80) throw new Error('Informe uma categoria com até 80 caracteres.');
   if (note.length > 1000) throw new Error('A descrição deve ter até 1.000 caracteres.');
   if (keywords.length > 15 || keywords.some(tag => tag.length > 40)) {
     throw new Error('Use até 15 tags, com até 40 caracteres cada.');
   }
 
-  const image = { file, title: name, category: group, description: note, tags: keywords };
-  if (slot == null || slot === '') return image;
-
-  const position = typeof slot === 'string' && /^\d+$/.test(slot) ? Number(slot) : slot;
-  if (!Number.isInteger(position) || position < 1 || position > SLOT_COUNT) {
-    throw new Error(`Escolha uma posição de 1 a ${SLOT_COUNT}.`);
-  }
-  return { ...image, slot: position };
+  return {
+    file,
+    title: name,
+    description: note,
+    tags: keywords,
+    slot: normalizeSlot(slot),
+    ...normalizeImageMetadata({ author, category }),
+  };
 }
 
 export function createCatalogConnection(config) {
@@ -143,11 +164,11 @@ export function createCatalogConnection(config) {
   async function listImages() {
     const images = [];
     let cursor;
-    let includeSlot = true;
+    let optionalColumns = ['slot', 'author'];
 
     for (;;) {
       const params = new URLSearchParams({
-        select: includeSlot ? `${IMAGE_COLUMNS},slot` : IMAGE_COLUMNS,
+        select: [IMAGE_COLUMNS, ...optionalColumns].join(','),
         order: 'created_at.desc,id.desc',
         limit: String(PAGE_SIZE),
       });
@@ -167,11 +188,12 @@ export function createCatalogConnection(config) {
       }
 
       const rows = await response.json().catch(() => null);
-      if (!response.ok && includeSlot && isMissingSlotColumn(rows)) {
-        includeSlot = false;
-        continue;
-      }
       if (!response.ok || !Array.isArray(rows)) {
+        const unavailable = optionalColumns.find(column => isMissingCatalogColumn(rows, column));
+        if (unavailable) {
+          optionalColumns = optionalColumns.filter(column => column !== unavailable);
+          continue;
+        }
         throw new Error(rows?.message || 'Confira a chave pública e a configuração do catálogo no Supabase.');
       }
       if (!rows.length) return images;
@@ -181,37 +203,49 @@ export function createCatalogConnection(config) {
     }
   }
 
+  async function saveImage(method, body, headers = {}) {
+    let response;
+    try {
+      response = await fetch(`${url}/functions/v1/acervo-images`, {
+        method,
+        headers: { apikey: key, ...headers },
+        body,
+        redirect: 'error',
+      });
+    } catch (cause) {
+      throw new Error('Não foi possível acessar o serviço do catálogo.', { cause });
+    }
+
+    const image = await response.json().catch(() => null);
+    if (!response.ok || !image?.id) {
+      const error = new Error(image?.error || 'O serviço do catálogo não está disponível.');
+      error.status = response.status;
+      error.code = image?.code;
+      throw error;
+    }
+    return image;
+  }
+
   async function uploadImage(fields) {
     const { file, tags, ...metadata } = normalizeImage(fields);
     const dimensions = await imageDimensions(file);
     const form = new FormData();
     for (const [name, value] of Object.entries({ ...metadata, ...dimensions, supabaseUrl: url })) {
-      form.set(name, value);
+      if (value !== null) form.set(name, value);
     }
     form.set('file', file, file.name);
     for (const tag of tags) form.append('tags', tag);
-
-    let response;
-    try {
-      response = await fetch(`${url}/functions/v1/acervo-images`, {
-        method: 'POST',
-        headers: { apikey: key },
-        body: form,
-        redirect: 'error',
-      });
-    } catch (cause) {
-      throw new Error('Não foi possível acessar o serviço de envio do catálogo.', { cause });
-    }
-
-    const body = await response.json().catch(() => null);
-    if (!response.ok || !body?.id) {
-      const error = new Error(body?.error || 'O serviço de envio do catálogo não está disponível.');
-      error.status = response.status;
-      error.code = body?.code;
-      throw error;
-    }
-    return body;
+    return saveImage('POST', form);
   }
 
-  return { listImages, uploadImage };
+  async function updateImageMetadata({ slot, author, category }) {
+    const metadata = {
+      slot: normalizeSlot(slot),
+      ...normalizeImageMetadata({ author, category }),
+      supabaseUrl: url,
+    };
+    return saveImage('PATCH', JSON.stringify(metadata), { 'Content-Type': 'application/json' });
+  }
+
+  return { listImages, uploadImage, updateImageMetadata };
 }
