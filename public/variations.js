@@ -2,7 +2,7 @@ import { createCaptionControls } from './captions.js';
 import { bindVerticalSwipes } from './flow-motion.js';
 
 export function createVariations({
-  getImages, uploadVariation, editImage, isSaving, editCustomAuthor, chooseReplacement, isReplacing, openPhoto, report,
+  getImages, uploadVariation, editImage, isSaving, editCustomAuthor, openPhoto, report,
 }) {
   const byId = id => document.getElementById(id);
   const dialog = byId('variations-dialog');
@@ -15,8 +15,6 @@ export function createVariations({
   const position = byId('variant-position');
   const strip = byId('variant-thumbnails');
   const add = byId('add-variations');
-  const replace = byId('replace-variant');
-  const replaceLabel = replace.querySelector('span') ?? replace;
   const picker = byId('variant-files');
   const status = byId('variant-status');
 
@@ -146,10 +144,6 @@ export function createVariations({
       categoryDisabled: isSaving(selected, 'category'),
     });
     add.disabled = uploading.has(parent.id);
-    const replacing = isReplacing(selected);
-    replace.setAttribute('aria-disabled', String(replacing));
-    const action = replacing ? 'Trocando…' : 'Trocar foto';
-    if (replaceLabel.textContent !== action) replaceLabel.textContent = action;
     renderNotice(parent);
     renderThumbnails(images);
     if (selected.id !== previousId) {
@@ -226,9 +220,6 @@ export function createVariations({
   });
   favorite.addEventListener('click', () => {
     if (selected) void save(parent, selected, 'favorite', !selected.favorite);
-  });
-  replace.addEventListener('click', () => {
-    if (selected && !isReplacing(selected)) chooseReplacement(selected);
   });
   strip.addEventListener('click', event => {
     const thumb = event.target.closest('.variant-thumb');

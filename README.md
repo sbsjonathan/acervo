@@ -19,7 +19,7 @@ Toque no texto pequeno da capa para escolher o autor e no título grande para es
 
 Deslize na horizontal para trocar de capa. Em uma capa com foto, deslize para cima ou toque na seta para abrir as variações. O **+** nessa janela permite escolher várias imagens do aparelho. Cada variação começa com o autor e a categoria da capa e pode ser editada individualmente. Deslize na vertical ou toque nas miniaturas para escolher uma imagem. A seta para baixo fecha a janela.
 
-Use **Trocar foto** para substituir a imagem da capa. Para substituir uma variação, abra **Variações**, selecione a miniatura e toque em **Trocar foto**. A troca preserva a posição, o autor, a categoria, o coração e o vínculo com a capa.
+Toque na capa ou na prévia de uma variação para abrir a foto em tela cheia. O ícone de troca no canto inferior direito abre a galeria do aparelho. A troca preserva a posição, o autor, a categoria, o coração e o vínculo com a capa.
 
 ## Teste local
 

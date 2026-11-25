@@ -16,7 +16,11 @@ const element = (tag, className, content) => {
 const detail = byId('detail-dialog');
 const slotFile = byId('slot-file');
 const replacementFile = byId('replacement-file');
-const replaceCover = byId('replace-cover');
+const detailPhoto = byId('detail-image');
+const replaceDetail = byId('replace-detail');
+const detailFeedback = byId('detail-feedback');
+let viewedImage = null;
+let feedbackTimer;
 const replacing = new Set();
 const replacementAttempts = new WeakMap();
 let replacementTarget = null;
@@ -63,8 +67,6 @@ const captions = createCaptionControls({
 const variations = createVariations({
   getImages: imagesForCover,
   uploadVariation,
-  chooseReplacement,
-  isReplacing,
   editImage,
   isSaving,
   editCustomAuthor,
@@ -125,10 +127,6 @@ function updateImageActions() {
   favoriteButton.setAttribute('aria-pressed', String(favorite));
   favoriteButton.setAttribute('aria-label', favorite ? 'Remover dos favoritos' : 'Adicionar aos favoritos');
   variationsToggle.disabled = !image;
-  replaceCover.hidden = !image;
-  replaceCover.disabled = isReplacing(image);
-  const label = replaceCover.disabled ? 'Trocando…' : 'Trocar foto';
-  if (replaceCover.textContent !== label) replaceCover.textContent = label;
 }
 
 function openVariations() {
@@ -357,11 +355,24 @@ function updateCover(cover, active) {
   cover.replaceChildren(content, reflection);
 }
 
+function updateDetailAction() {
+  const busy = replacing.has(viewedImage?.id);
+  replaceDetail.disabled = !viewedImage || busy;
+  replaceDetail.setAttribute('aria-busy', String(busy));
+}
+
+function clearDetailFeedback() {
+  clearTimeout(feedbackTimer);
+  detailFeedback.hidden = true;
+  detailFeedback.textContent = '';
+}
+
 function openDetail(image) {
-  const photo = byId('detail-image');
-  photo.dataset.imageId = image.id;
-  photo.alt = image.parentId ? (image.title || 'Variação da capa') : `Foto do álbum ${albumNumber(image.slot)}`;
-  photo.src = image.src;
+  viewedImage = image;
+  clearDetailFeedback();
+  updateDetailAction();
+  detailPhoto.alt = image.parentId ? (image.title || 'Variação da capa') : `Foto do álbum ${albumNumber(image.slot)}`;
+  detailPhoto.src = image.src;
   detail.showModal();
 }
 
@@ -398,35 +409,20 @@ async function refreshTakenSlot(slot, source) {
   }
 }
 
-function isReplacing(image) {
-  return Boolean(image && replacing.has(image.id));
-}
-
-function chooseReplacement(image) {
-  if (!image || !state.source || isReplacing(image)) return;
-  replacementTarget = image;
-  // A modal makes controls outside it inert. Open the picker from the active surface.
-  const sheet = byId('variations-dialog');
-  (sheet.open ? sheet : slotFile.parentElement).append(replacementFile);
-  replacementFile.value = '';
-  replacementFile.click();
-}
-
 function applyReplacement(image, saved) {
   // Caption and favorite edits can finish while a new file is uploading.
   for (const field of ['storagePath', 'src', 'width', 'height', 'fileName', 'fileSize']) {
     image[field] = saved[field];
   }
   if (image.slot) renderAlbum(image.slot);
-  const detailPhoto = byId('detail-image');
-  if (detail.open && detailPhoto.dataset.imageId === image.id) detailPhoto.src = image.src;
+  if (detail.open && viewedImage?.id === image.id) detailPhoto.src = image.src;
 }
 
 async function replacePhoto(image, file) {
   const source = state.source;
-  if (!source || isReplacing(image)) return;
+  if (!source || replacing.has(image.id)) return;
   replacing.add(image.id);
-  refreshImage(image);
+  updateDetailAction();
   const root = image.parentId ? state.images.get(image.parentId) : image;
   const label = image.parentId ? 'Variação' : 'Capa';
   let message;
@@ -452,9 +448,18 @@ async function replacePhoto(image, file) {
     failed = true;
   } finally {
     replacing.delete(image.id);
-    refreshImage(image);
+    updateDetailAction();
+    variations.refresh();
   }
-  if (!variations.notifyImage(image, message, failed)) reportSlot(message);
+  if (detail.open && viewedImage?.id === image.id) {
+    if (failed) {
+      detailFeedback.textContent = message;
+      detailFeedback.hidden = false;
+      feedbackTimer = setTimeout(clearDetailFeedback, 7000);
+    }
+  } else if (!variations.notifyImage(image, message, failed)) {
+    reportSlot(message);
+  }
 }
 
 async function prepareSlotUpload(slot, file) {
@@ -544,12 +549,6 @@ function showToast(message) {
 }
 
 detail.querySelector('[data-close]').addEventListener('click', () => detail.close());
-detail.addEventListener('click', event => {
-  if (event.target !== detail) return;
-  const box = detail.getBoundingClientRect();
-  if (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom) detail.close();
-});
-
 // Keep a picker attached to the cover the user tapped, even during a fling.
 for (const select of [authorSelect, categorySelect]) {
   const settleCaption = () => motion.jumpTo(Math.round(motion.getPosition()));
@@ -590,9 +589,12 @@ slotFile.addEventListener('change', () => {
   slotFile.value = '';
   if (slot && file) void prepareSlotUpload(slot, file);
 });
-replaceCover.addEventListener('click', () => {
-  motion.jumpTo(Math.round(motion.getPosition()));
-  chooseReplacement(state.albums.get(activeIndex + 1));
+replaceDetail.addEventListener('click', () => {
+  if (!detail.open || !viewedImage || replacing.has(viewedImage.id) || !state.source) return;
+  clearDetailFeedback();
+  replacementTarget = viewedImage;
+  replacementFile.value = '';
+  replacementFile.click();
 });
 replacementFile.addEventListener('change', () => {
   const image = replacementTarget;
@@ -631,7 +633,10 @@ if (typeof ResizeObserver === 'function') {
   }).observe(viewport);
 }
 detail.addEventListener('close', () => {
-  if (!detail.open) byId('detail-image').removeAttribute('src');
+  if (detail.open) return;
+  viewedImage = null;
+  detailPhoto.removeAttribute('src');
+  clearDetailFeedback();
 });
 
 connectCatalog();
