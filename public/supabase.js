@@ -77,7 +77,7 @@ export function toImage(row, url) {
     src: `${url}/storage/v1/object/public/${BUCKET}/${path}`,
     title: row.title,
     author: row.author ?? null,
-    category: row.category,
+    category: row.category ?? null,
     description: row.description,
     tags: row.tags,
     createdAt: row.created_at,
@@ -111,8 +111,18 @@ export function normalizeImageMetadata({ author, category }) {
   if ((author != null && typeof author !== 'string') || name.includes('\0') || [...name].length > AUTHOR_MAX_LENGTH) {
     throw new Error(`Use um nome de autor com até ${AUTHOR_MAX_LENGTH} caracteres.`);
   }
-  if (!IMAGE_CATEGORIES.includes(group)) throw new Error('Escolha uma das categorias disponíveis.');
-  return { author: name || null, category: group };
+  if ((category != null && typeof category !== 'string') || (group && !IMAGE_CATEGORIES.includes(group))) {
+    throw new Error('Escolha uma das categorias disponíveis.');
+  }
+  return { author: name || null, category: group || null };
+}
+
+export function normalizeMetadataPatch(fields) {
+  const keys = ['author', 'category'].filter(key => Object.hasOwn(fields, key));
+  if (!keys.length) throw new Error('Informe autor ou categoria para editar a foto.');
+
+  const metadata = normalizeImageMetadata(fields);
+  return Object.fromEntries(keys.map(key => [key, metadata[key]]));
 }
 
 export function normalizeSlot(slot) {
@@ -238,10 +248,10 @@ export function createCatalogConnection(config) {
     return saveImage('POST', form);
   }
 
-  async function updateImageMetadata({ slot, author, category }) {
+  async function updateImageMetadata(fields) {
     const metadata = {
-      slot: normalizeSlot(slot),
-      ...normalizeImageMetadata({ author, category }),
+      slot: normalizeSlot(fields.slot),
+      ...normalizeMetadataPatch(fields),
       supabaseUrl: url,
     };
     return saveImage('PATCH', JSON.stringify(metadata), { 'Content-Type': 'application/json' });

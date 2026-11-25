@@ -1,6 +1,6 @@
 import {
   BUCKET, TABLE, SLOT_COUNT, IMAGE_TYPES, MAX_IMAGE_BYTES,
-  isMissingCatalogColumn, jwtRole, supabaseOrigin, normalizeImage, normalizeImageMetadata, normalizeSlot, toImage,
+  isMissingCatalogColumn, jwtRole, supabaseOrigin, normalizeImage, normalizeMetadataPatch, normalizeSlot, toImage,
 } from '../public/supabase.js';
 
 const MAX_REQUEST_BYTES = MAX_IMAGE_BYTES + 32 * 1024;
@@ -191,7 +191,7 @@ async function updateMetadata(request, supabase) {
       return json({ error: 'Para editar, conecte o catálogo ao projeto Supabase configurado no servidor.' }, 409);
     }
     slot = normalizeSlot(data.slot);
-    metadata = normalizeImageMetadata(data);
+    metadata = normalizeMetadataPatch(data);
   } catch (error) {
     return json({ error: error.message }, 400);
   }
@@ -245,7 +245,7 @@ export async function handleImageRequest(request, env) {
         file: form.get('file'),
         title: form.get('title'),
         author: form.get('author'),
-        category: legacyUpload ? 'Outro' : category,
+        category: legacyUpload ? null : category,
         description: form.get('description'),
         tags: form.getAll('tags'),
         slot: form.get('slot'),

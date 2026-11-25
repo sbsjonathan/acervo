@@ -15,7 +15,7 @@ O workflow [pages.yml](.github/workflows/pages.yml) publica a branch `main` e ta
 
 Qualquer visitante pode preencher um álbum vazio e editar o autor e a categoria de uma foto. O banco protege a posição já preenchida e a função usa a chave de serviço do Supabase no servidor. O esquema disponibiliza leitura pública das fotos.
 
-Escolha **Autor** e **Categoria** na capa. A opção **Outro** em Autor abre um campo para o nome. Ao tocar no **+**, o Acervo envia a foto do aparelho com os campos escolhidos. Para editar uma foto que já está no álbum, mude os campos e clique em **Salvar**.
+Toque no texto pequeno da capa para escolher o autor e no título grande para escolher a categoria. A opção **Outro** na lista de autores permite digitar um nome. Em álbuns vazios, as escolhas acompanham a foto enviada pelo **+**. Em álbuns com foto, cada alteração é salva automaticamente.
 
 ## Teste local
 

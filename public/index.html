@@ -29,39 +29,28 @@
         <div class="flow-viewport" id="flow-viewport" tabindex="0" aria-label="Capas da coleção. Use as setas do teclado para navegar.">
           <div class="flow-track" id="gallery"></div>
         </div>
-        <form class="metadata-form" id="metadata-form" aria-label="Detalhes da foto">
-          <div class="metadata-fields">
-            <div class="metadata-author">
-              <label class="metadata-field" for="author-select">
-                <span>Autor</span>
-                <select id="author-select" name="author">
-                  <option value="">Selecionar</option>
-                  <option value="Yasmim">Yasmim</option>
-                  <option value="Áquila">Áquila</option>
-                  <option value="Jonathan">Jonathan</option>
-                  <option value="other">Outro</option>
-                </select>
-              </label>
-              <label class="metadata-field" id="author-custom-field" for="author-custom" hidden>
-                <span>Nome do autor</span>
-                <input id="author-custom" name="authorCustom" type="text" autocomplete="off" maxlength="80">
-              </label>
-            </div>
-            <label class="metadata-field" for="category-select">
-              <span>Categoria</span>
-              <select id="category-select" name="category">
-                <option value="Logo">Logo</option>
-                <option value="Frases">Frases</option>
-                <option value="Desenho">Desenho</option>
-                <option value="Outro" selected>Outro</option>
-              </select>
-            </label>
-          </div>
-          <div class="metadata-actions">
-            <p class="metadata-status" id="metadata-status" role="status" aria-atomic="true"></p>
-            <button class="button primary" id="save-metadata" type="submit" hidden>Salvar</button>
-          </div>
-        </form>
+        <div class="flow-caption">
+          <label class="caption-line caption-author">
+            <span id="author-caption" aria-hidden="true">Autor</span>
+            <select class="caption-select" id="author-select" name="author" aria-label="Autor">
+              <option value="">Autor</option>
+              <option value="Yasmim">Yasmim</option>
+              <option value="Áquila">Áquila</option>
+              <option value="Jonathan">Jonathan</option>
+              <option value="other">Outro</option>
+            </select>
+          </label>
+          <label class="caption-line caption-category">
+            <span id="category-caption" aria-hidden="true">Categoria</span>
+            <select class="caption-select" id="category-select" name="category" aria-label="Categoria">
+              <option value="">Categoria</option>
+              <option value="Logo">Logo</option>
+              <option value="Frases">Frases</option>
+              <option value="Desenho">Desenho</option>
+              <option value="Outro">Outro</option>
+            </select>
+          </label>
+        </div>
         <p class="visually-hidden" id="flow-announcement" role="status" aria-atomic="true"></p>
         <div class="flow-controls">
           <div class="flow-counter" id="results"></div>
@@ -82,6 +71,18 @@
     <p class="visually-hidden" id="slot-announcement" role="status" aria-atomic="true"></p>
     <input id="slot-file" type="file" accept="image/*" hidden>
   </main>
+
+  <dialog class="dialog author-dialog" id="author-dialog" aria-labelledby="author-dialog-title">
+    <form id="author-form">
+      <h2 id="author-dialog-title">Nome do autor</h2>
+      <label class="visually-hidden" for="author-custom">Nome do autor</label>
+      <input id="author-custom" name="author" type="text" autocomplete="off" maxlength="80" required autofocus>
+      <div class="author-dialog-actions">
+        <button class="button secondary" id="cancel-author" type="button">Cancelar</button>
+        <button class="button primary" type="submit">Salvar</button>
+      </div>
+    </form>
+  </dialog>
 
   <dialog class="dialog detail-dialog" id="detail-dialog" aria-label="Visualização da foto">
     <button class="icon-button detail-close" type="button" data-close aria-label="Fechar foto"><svg aria-hidden="true"><use href="#i-close"/></svg></button>

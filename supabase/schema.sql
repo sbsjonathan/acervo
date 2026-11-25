@@ -4,7 +4,7 @@ create table if not exists public.catalog_images (
   id uuid primary key,
   owner_id uuid references auth.users(id) on delete cascade,
   title text not null check (char_length(btrim(title)) between 1 and 120),
-  category text not null check (char_length(btrim(category)) between 1 and 80),
+  category text check (char_length(btrim(category)) between 1 and 80),
   description text not null default '' check (char_length(description) <= 1000),
   tags text[] not null default '{}' check (cardinality(tags) <= 15),
   width integer not null check (width > 0),
@@ -18,6 +18,7 @@ create table if not exists public.catalog_images (
 alter table public.catalog_images
   add column if not exists author text,
   add column if not exists slot integer,
+  alter column category drop not null,
   alter column owner_id drop not null,
   drop constraint if exists catalog_images_check,
   drop constraint if exists catalog_images_storage_path_check,
