@@ -39,6 +39,7 @@ const categorySelect = byId('category-select');
 const metadataDrafts = new Map();
 const pendingFields = new WeakMap();
 const flowCounter = byId('results');
+const remainingCovers = byId('remaining-covers');
 const announcement = byId('flow-announcement');
 const favoritesKey = 'acervo-favoritos-v1';
 const state = {
@@ -213,12 +214,24 @@ function updateCaption() {
   updateImageActions();
 }
 
+function updateRemainingCovers() {
+  remainingCovers.hidden = !state.source;
+  if (remainingCovers.hidden) return;
+
+  const count = SLOT_COUNT - state.albums.size;
+  let message = `Faltam ${count} capas`;
+  if (count === 1) message = 'Falta 1 capa';
+  if (count === 0) message = `Todas as ${SLOT_COUNT} capas preenchidas`;
+  if (remainingCovers.textContent !== message) remainingCovers.textContent = message;
+}
+
 function renderCollection() {
   byId('flow').hidden = state.pending || Boolean(state.error);
   byId('loading').hidden = !state.pending;
   const error = byId('empty');
   error.hidden = !state.error;
   byId('empty-copy').textContent = state.error;
+  updateRemainingCovers();
   measureFlow();
   updateFlow(motion.getPosition());
   for (const [slot, cover] of covers) updateCover(cover, slot === activeSlot);
@@ -381,6 +394,7 @@ function renderAlbum(album) {
     if (Number(cover.dataset.album) === album) updateCover(cover, slot === activeSlot);
   }
   if (activeIndex + 1 === album) updateCaption();
+  updateRemainingCovers();
 }
 
 function rememberImage(image) {

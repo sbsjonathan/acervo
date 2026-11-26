@@ -55,7 +55,9 @@ svg:not(.symbols) { fill:none; stroke:currentColor; stroke-width:1.65; stroke-li
 .main-content {
   --top-padding:max(12px, env(safe-area-inset-top));
   --bottom-padding:max(12px, env(safe-area-inset-bottom));
-  --gallery-height:calc(var(--screen-height) - var(--top-padding) - var(--bottom-padding));
+  --count-gap:.75rem;
+  --count-line:1.25rem;
+  --gallery-height:calc(var(--screen-height) - var(--top-padding) - var(--bottom-padding) - var(--count-gap) - var(--count-line));
   align-self:center;
   padding-block:var(--top-padding) var(--bottom-padding);
 }
@@ -225,6 +227,14 @@ svg:not(.symbols) { fill:none; stroke:currentColor; stroke-width:1.65; stroke-li
   background:#191717;
 }
 .flow-counter { color:#c4b5a9; font-size:.85rem; font-variant-numeric:tabular-nums; letter-spacing:.06em; }
+.remaining-covers {
+  margin:var(--count-gap) 0 0;
+  padding-inline:12px;
+  color:var(--muted);
+  font-size:.875rem;
+  line-height:var(--count-line);
+  font-variant-numeric:tabular-nums;
+}
 .flow-navigation { display:flex; gap:8px; align-items:center; }
 .icon-button { border:1px solid var(--border); background:var(--paper); color:var(--brown); width:44px; height:44px; border-radius:50%; display:grid; place-items:center; padding:0; flex:none; }
 .flow-nav-button { border-color:#4b3a32; }
